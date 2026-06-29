@@ -20,6 +20,7 @@
 #include <linux/suspend.h>
 #include <linux/platform_device.h>
 #include <asm/cpuidle.h>
+#include <asm/outercache.h>
 
 #define MVEBU_V7_FLAG_DEEP_IDLE	0x10000
 
@@ -39,6 +40,9 @@ static __cpuidle int mvebu_v7_enter_idle(struct cpuidle_device *dev,
 	ct_cpuidle_enter();
 	ret = mvebu_v7_cpu_suspend(deepidle);
 	ct_cpuidle_exit();
+
+	if (deepidle)
+		outer_resume();
 
 	cpu_pm_exit();
 
