@@ -205,6 +205,24 @@
 		enable-gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_HIGH>;
 		vcc-supply = <&vcc3v3_sys>;
 	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		optee@30000000 {
+			reg = <0x0 0x30000000 0x0 0x2400000>;
+			no-map;
+		};
+	};
+
+	firmware {
+		optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+		};
+	};
 };
 
 &cpu_alert0 {
