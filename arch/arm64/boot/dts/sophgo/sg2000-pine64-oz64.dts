@@ -232,10 +232,17 @@
 };
 
 &emmc {
-	bus-width = <4>;
+	/*
+	 * The Oz64 eMMC is unreliable at 52 MHz with 4 data lines: U-Boot's
+	 * 52 MHz/4-bit reads fail on this board, and the live installer has to
+	 * read and write the user area.  Start at the conservative 3.3 V
+	 * high-speed mode, 26 MHz on DAT0 only.  Raise bus-width to 4 and/or
+	 * the clock only after a hardware read/write/erase test.
+	 */
+	bus-width = <1>;
 	cap-mmc-highspeed;
 	cap-mmc-hw-reset;
-	max-frequency = <52000000>;
+	max-frequency = <26000000>;
 	no-1-8-v;
 	no-sd;
 	no-sdio;
