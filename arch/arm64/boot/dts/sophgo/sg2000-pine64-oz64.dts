@@ -212,6 +212,10 @@
 };
 
 &gmac0 {
+	/* The SG2000 internal ePHY is wired in RMII mode; mainline's
+	 * dwmac-generic has no cv1800b glue for the vendor "internal" mode.
+	 */
+	phy-mode = "rmii";
 	status = "okay";
 };
 
