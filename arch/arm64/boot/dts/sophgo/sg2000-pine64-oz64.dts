@@ -42,6 +42,26 @@
 		pinctrl-names = "default";
 	};
 
+	/*
+	 * CVSNFC SPI NAND controller.  U12 shares the eMMC pads, so this stays
+	 * disabled while the eMMC module is the boot medium.  There is no
+	 * mainline driver for "cvitek,cv1835-spinf" yet; see
+	 * docs/oz64-spi-nand.md in h700-harness-oz64.
+	 */
+	spinand: spi@4060000 {
+		compatible = "cvitek,cv1835-spinf";
+		reg = <0x04060000 0x1000>;
+		interrupts = <GIC_SPI 23 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk CLK_SPI_NAND>;
+		clock-names = "core";
+		resets = <&rst RST_SPI_NAND>;
+		reset-names = "core";
+		bus-width = <4>;
+		pinctrl-0 = <&spinand_cfg>;
+		pinctrl-names = "default";
+		status = "disabled";
+	};
+
 	wifi_pwrseq: wifi-pwrseq {
 		compatible = "mmc-pwrseq-simple";
 		reset-gpios = <&porta 30 GPIO_ACTIVE_LOW>;
@@ -89,6 +109,20 @@
 				 <PINMUX(PIN_EMMC_DAT1, 0)>,
 				 <PINMUX(PIN_EMMC_DAT2, 0)>,
 				 <PINMUX(PIN_EMMC_DAT3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	spinand_cfg: spinand-cfg {
+		spinand-pins {
+			pinmux = <PINMUX(PIN_EMMC_CLK, 2)>,
+				 <PINMUX(PIN_EMMC_CMD, 2)>,
+				 <PINMUX(PIN_EMMC_DAT0, 2)>,
+				 <PINMUX(PIN_EMMC_DAT1, 2)>,
+				 <PINMUX(PIN_EMMC_DAT2, 2)>,
+				 <PINMUX(PIN_EMMC_DAT3, 2)>;
 			bias-pull-up;
 			drive-strength-microamp = <10800>;
 			power-source = <3300>;
