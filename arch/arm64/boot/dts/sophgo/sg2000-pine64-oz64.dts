@@ -300,6 +300,57 @@
 	status = "okay";
 };
 
+/*
+ * Reboot on the Oz64.
+ *
+ * U-Boot resets the board by writing 1 to 0x0300bef0, but that undocumented
+ * register does not reset this board when driven from Linux, so it is not
+ * used here.  PSCI reset does not reset this board, RTC reset needs the RTC
+ * clock, and the watchdog is not used.
+ *
+ * Use the documented RSTGEN whole-chip reset instead: set sys_ctrl_reg bit 5
+ * to enable it, then clear SOFT_RSTN_2 bit 12 to trigger it.  syscon-reboot
+ * logs "Unable to restart system" and waits 1 s after each write before
+ * returning to the notifier chain, so the enable handler's warning and delay
+ * before reboot-trigger resets the board are expected.  reboot-cpuac is a
+ * last-resort fallback.
+ */
+&syscon {
+	/*
+	 * Whole-chip system soft reset: set sys_ctrl_reg bit 5 to enable the
+	 * reset, then clear SOFT_RSTN_2 bit 12 in &rst below.
+	 */
+	reboot-enable {
+		compatible = "syscon-reboot";
+		offset = <0x8>;
+		mask = <0x20>;
+		value = <0x20>;
+		priority = <200>;
+	};
+};
+
+&rst {
+	/* Keep the reset-simple compatible first; add syscon for the children. */
+	compatible = "sophgo,cv1800b-reset", "syscon", "simple-mfd";
+
+	reboot-trigger {
+		compatible = "syscon-reboot";
+		offset = <0x8>;
+		mask = <0x1000>;
+		value = <0x0>;
+		priority = <199>;
+	};
+
+	/* Documented CPU/CPUSYS reset; the selected bits auto-clear. */
+	reboot-cpuac {
+		compatible = "syscon-reboot";
+		offset = <0x20>;
+		mask = <0x7f>;
+		value = <0x0>;
+		priority = <198>;
+	};
+};
+
 &usb {
 	dr_mode = "host";
 	vbus-supply = <&reg_usb_vbus>;
