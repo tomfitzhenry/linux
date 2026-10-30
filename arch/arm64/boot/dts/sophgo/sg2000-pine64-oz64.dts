@@ -70,6 +70,43 @@
 		pinctrl-0 = <&wifi_pwr_cfg>;
 		pinctrl-names = "default";
 	};
+
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Oz64";
+		simple-audio-card,mclk-fs = <256>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		simple-audio-card,dai-link@0 {
+			reg = <0>;
+			format = "i2s";
+			bitclock-master = <&playback_cpu>;
+			frame-master = <&playback_cpu>;
+
+			playback_cpu: cpu {
+				sound-dai = <&i2s3>;
+				system-clock-frequency = <12288000>;
+			};
+
+			codec {
+				sound-dai = <&dac>;
+			};
+		};
+	};
+
+	reg_spk_en: regulator-spk-en {
+		compatible = "regulator-fixed";
+		regulator-name = "spk-en";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&porta 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		startup-delay-us = <10000>;
+		pinctrl-0 = <&spk_en_cfg>;
+		pinctrl-names = "default";
+	};
 };
 
 &osc {
@@ -225,6 +262,15 @@
 			power-source = <3300>;
 		};
 	};
+
+	spk_en_cfg: spk-en-cfg {
+		spk-en-pins {
+			pinmux = <PINMUX(PIN_SPK_EN, 3)>;
+			bias-pull-down;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
 };
 
 &dmac {
@@ -348,6 +394,26 @@
 		mask = <0x7f>;
 		value = <0x0>;
 		priority = <198>;
+	};
+};
+
+&{/soc} {
+	i2s3: i2s@4130000 {
+		compatible = "sophgo,cv1800b-i2s";
+		reg = <0x04130000 0x1000>;
+		clocks = <&clk CLK_APB_I2S3>, <&clk CLK_SDMA_AUD3>;
+		clock-names = "i2s", "mclk";
+		dmas = <&dmamux 7 0>;
+		dma-names = "tx";
+		#sound-dai-cells = <0>;
+		status = "okay";
+	};
+
+	dac: audio-codec@300a000 {
+		compatible = "sophgo,cv1800b-sound-dac";
+		reg = <0x0300a000 0x100>;
+		#sound-dai-cells = <0>;
+		status = "okay";
 	};
 };
 
