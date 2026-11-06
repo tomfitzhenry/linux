@@ -155,7 +155,21 @@
 		};
 	};
 
+	/*
+	 * The microSD socket's SD0_CD pin is wired (100R series + 47k pull-up to
+	 * SD_PWR_3V3 on schematic sheet 6).  Mux it to the SDIO0 function so the
+	 * controller's card-detect input works even when the bootloader does not
+	 * leave it muxed, and so a card inserted after boot is detected.  Same
+	 * group as sg2000-milkv-duo-s.dts.
+	 */
 	sdhci0_cfg: sdhci0-cfg {
+		sdhci0-cd-pins {
+			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
 		sdhci0-clk-pins {
 			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
 			bias-pull-up;
