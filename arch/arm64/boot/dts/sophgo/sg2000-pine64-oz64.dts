@@ -31,17 +31,6 @@
 		};
 	};
 
-	reg_usb_vbus: regulator-usb-vbus {
-		compatible = "regulator-fixed";
-		regulator-name = "usb-vbus";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		gpio = <&portb 5 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-		pinctrl-0 = <&usb_vbus_en_cfg>;
-		pinctrl-names = "default";
-	};
-
 	/*
 	 * CVSNFC SPI NAND controller.  U12 shares the eMMC pads, so this stays
 	 * disabled while the eMMC module is the boot medium.  There is no
@@ -245,15 +234,6 @@
 		};
 	};
 
-	usb_vbus_en_cfg: usb-vbus-en-cfg {
-		usb-vbus-en-pins {
-			pinmux = <PINMUX(PIN_USB_VBUS_EN, 0)>;
-			bias-pull-down;
-			drive-strength-microamp = <10800>;
-			power-source = <1800>;
-		};
-	};
-
 	wifi_pwr_cfg: wifi-pwr-cfg {
 		wifi-pwr-pins {
 			pinmux = <PINMUX(PIN_AUX0, 3)>;
@@ -287,7 +267,6 @@
 	 * after a hardware read/write/erase test at 52 MHz passes.
 	 */
 	bus-width = <4>;
-	cap-mmc-highspeed;
 	cap-mmc-hw-reset;
 	max-frequency = <26000000>;
 	no-1-8-v;
@@ -300,10 +279,11 @@
 };
 
 &gmac0 {
-	/* The SG2000 internal ePHY is wired in RMII mode; mainline's
-	 * dwmac-generic has no cv1800b glue for the vendor "internal" mode.
+	/*
+	 * The internal ePHY and its MDIO mux are described by the SoC dtsi;
+	 * the inherited phy-mode is "internal" and works on this board
+	 * (100Mbps/Full, hardware-verified 2026-11-04).
 	 */
-	phy-mode = "rmii";
 	status = "okay";
 };
 
@@ -418,7 +398,7 @@
 };
 
 &usb {
+	/* VBUS power is handled by the in-tree cv1800b USB2 PHY driver. */
 	dr_mode = "host";
-	vbus-supply = <&reg_usb_vbus>;
 	status = "okay";
 };
