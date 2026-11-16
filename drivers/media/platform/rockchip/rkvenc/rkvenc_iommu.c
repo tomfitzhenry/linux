@@ -184,7 +184,7 @@ rkvenc_dma_import_fd(struct rkvenc_iommu_info *iommu_info,
 		goto fail_map;
 	}
 	buffer->iova = sg_dma_address(sgt->sgl);
-	buffer->size = sg_dma_len(sgt->sgl);
+	buffer->size = buffer->dmabuf->size;
 	buffer->attach = attach;
 	buffer->sgt = sgt;
 	buffer->dma = dma;
