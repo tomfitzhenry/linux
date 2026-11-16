@@ -44,7 +44,9 @@ static const char * const mstarv7_board_dt_compat[] __initconst = {
 	"mstar,infinity",
 	"mstar,infinity2m",
 	"mstar,infinity3",
+	"mstar,infinity6b0",
 	"mstar,mercury5",
+	"sstar,infinity6b0",
 	NULL,
 };
 

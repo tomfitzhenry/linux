@@ -14,3 +14,45 @@ config MSTAR_MSC313_MPLL
 	help
 	  Support for the MPLL PLL and dividers block present on
 	  MStar/Sigmastar SoCs.
+
+config MSTAR_MSC313_MUX
+	bool
+	select REGMAP
+
+config MSTAR_MSC313_UPLL
+	bool "MStar UPLL driver"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	select REGMAP_MMIO
+	help
+	  Support for the USB PLL present on MStar/Sigmastar SoCs.
+
+config MSTAR_MSC313_SC_GP_CTRL_MUXES
+	bool "MStar SC GP CTRL muxes driver"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	select MSTAR_MSC313_MUX
+	help
+	  Support for the muxes embedded in the sc-gp-ctrl registers
+	  (the Ethernet MII/RMII TX/RX reference clock selectors).
+
+config MSTAR_MSC313_PM_MUXES
+	bool "MStar PM region muxes driver"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	select MSTAR_MSC313_MUX
+	help
+	  Support for the muxes embedded in the PM region.
+
+config MSTAR_MSC313_CLKGEN
+	bool "MStar CLKGEN driver"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	select MSTAR_MSC313_MUX
+	select REGMAP_MMIO
+	help
+	  Support for the main CLKGEN block.
+
+config MSTAR_MSC313_CLKGEN_GATES
+	bool "MStar CLKGEN gates driver"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	help
+	  Support for the simple, single-bit gate clocks in the CLKGEN
+	  block. This is the older binding; newer SoCs describe their
+	  gates through the CLKGEN driver instead.

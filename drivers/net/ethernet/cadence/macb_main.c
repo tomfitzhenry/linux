@@ -39,6 +39,9 @@
 #include <linux/udp.h>
 #include <linux/gcd.h>
 #include <net/pkt_sched.h>
+#ifdef CONFIG_ARCH_MSTARV7
+#include <soc/mstar/riuxiu.h>
+#endif
 #include "macb.h"
 
 /* This structure is only used for MACB on SiFive FU540 devices */
@@ -246,6 +249,27 @@ static void hw_writel(struct macb *bp, int offset, u32 value)
 {
 	writel_relaxed(value, bp->regs + offset);
 }
+
+#ifdef CONFIG_ARCH_MSTARV7
+/*
+ * MStar/SigmaStar EMAC: the MACB/GEM register file is behind the MStar
+ * 16-bit RIU bus.  Register G occupies two 16-bit halves at RIU offsets
+ * 2*G (low) and 2*G+4 (high); command side effects (transmit, MDIO, ...)
+ * fire on the high-half write, so the write order matters.  Ported from
+ * linux-chenxing/mstar_v6_7_rebase (macb: Add support for MStar/SigmaStar
+ * EMAC):
+ * https://github.com/linux-chenxing/linux/blob/mstar_v6_7_rebase/drivers/net/ethernet/cadence/macb_main.c
+ */
+static u32 hw_readl_riu(struct macb *bp, int offset)
+{
+	return riu_readl(bp->regs, offset);
+}
+
+static void hw_writel_riu(struct macb *bp, int offset, u32 value)
+{
+	riu_writel(bp->regs, offset, value);
+}
+#endif
 
 /* Find the CPU endianness by using the loopback bit of NCR register. When the
  * CPU is in big endian we need to program swapped mode for management
@@ -5172,6 +5196,39 @@ static int macb_clk_init(struct platform_device *pdev, struct clk **pclk,
 					  tsu_clk);
 }
 
+#ifdef CONFIG_ARCH_MSTARV7
+/*
+ * The MStar EMAC has optional tx/rx reference clock inputs next to the
+ * usual pclk/hclk; keep them running for the PHY interface.  Ported from
+ * linux-chenxing/mstar_v6_7_rebase.
+ */
+static int msc313_clk_init(struct platform_device *pdev, struct clk **pclk,
+			   struct clk **hclk, struct clk **tx_clk,
+			   struct clk **rx_clk, struct clk **tsu_clk)
+{
+	struct clk *rx_ref, *tx_ref;
+	int err;
+
+	rx_ref = devm_clk_get_optional(&pdev->dev, "rx_ref");
+	if (IS_ERR(rx_ref))
+		return PTR_ERR(rx_ref);
+	tx_ref = devm_clk_get_optional(&pdev->dev, "tx_ref");
+	if (IS_ERR(tx_ref))
+		return PTR_ERR(tx_ref);
+
+	err = clk_prepare_enable(rx_ref);
+	if (err)
+		return err;
+	err = clk_prepare_enable(tx_ref);
+	if (err) {
+		clk_disable_unprepare(rx_ref);
+		return err;
+	}
+
+	return macb_clk_init_dflt(pdev, pclk, hclk, tx_clk, rx_clk, tsu_clk);
+}
+#endif
+
 static int macb_init_dflt(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
@@ -5482,6 +5539,20 @@ static int at91ether_start(struct macb *bp)
 			     MACB_BIT(ISR_ROVR)	|
 			     MACB_BIT(HRESP));
 
+	/*
+	 * MStar/SigmaStar: receive completion is signalled through the "RX
+	 * delay" block (JULIAN 0x104 bit 7 enable, 0x108 bit 15 pending),
+	 * not through the Cadence RCOM line.  Mirror the vendor 4.9 HAL's
+	 * MHal_EMAC_IntEnable() which sets J104 bit 7 when RX interrupts are
+	 * requested (and clears it here in the close path).
+	 */
+	if (bp->caps & MACB_CAPS_MSTAR_RIU) {
+		u32 j104 = macb_readl(bp, MSC313_JULIAN_104);
+
+		macb_writel(bp, MSC313_JULIAN_104,
+			    j104 | MACB_MSC313_J104_RX_DELAY_EN);
+	}
+
 	return 0;
 }
 
@@ -5497,6 +5568,13 @@ static void at91ether_stop(struct macb *bp)
 			     MACB_BIT(TCOMP)	|
 			     MACB_BIT(ISR_ROVR) |
 			     MACB_BIT(HRESP));
+
+	if (bp->caps & MACB_CAPS_MSTAR_RIU) {
+		u32 j104 = macb_readl(bp, MSC313_JULIAN_104);
+
+		macb_writel(bp, MSC313_JULIAN_104,
+			    j104 & ~MACB_MSC313_J104_RX_DELAY_EN);
+	}
 
 	/* Disable Receiver and Transmitter */
 	ctl = macb_readl(bp, NCR);
@@ -5576,42 +5654,103 @@ static int at91ether_close(struct net_device *netdev)
 }
 
 /* Transmit packet */
+static unsigned int at91ether_txqfree(u32 tsr)
+{
+	/* we have three possibilities here:
+	 *   - all pending packets transmitted (TGO, implies BNQ)
+	 *   - only first packet transmitted (!TGO && BNQ)
+	 *   - two frames pending (!TGO && !BNQ)
+	 * Note that TGO ("transmit go") is called "IDLE" on RM9200.
+	 */
+	return (tsr & MACB_BIT(TGO)) ? 2 :
+		(tsr & MACB_BIT(RM9200_BNQ)) ? 1 : 0;
+}
+
+/*
+ * MStar/SigmaStar EMAC: the hardware has a 4-slot TX FIFO and TSR reports
+ * how many slots are still busy.  Bits 3:4 and 7:12 form an 8-bit queue map;
+ * the four slots that must stay free are subtracted to get the number of
+ * usable free slots.  Ported from linux-chenxing/mstar_v6_7_rebase
+ * ("macb: Add support for MStar TX fifo"):
+ * https://github.com/linux-chenxing/linux/blob/mstar_v6_7_rebase/drivers/net/ethernet/cadence/macb_main.c
+ */
+static unsigned int msc313_txqfree(u32 tsr)
+{
+	unsigned int qlen;
+
+	qlen = hweight32(((tsr >> 3) & 0x3) | (((tsr >> 7) & 0x3f) << 2));
+	if (qlen > 4)
+		qlen -= 4;
+	else
+		qlen = 0;
+
+	return qlen;
+}
+
+/* Transmit packet */
 static netdev_tx_t at91ether_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev)
 {
 	struct macb *bp = netdev_priv(netdev);
 	struct device *dev = &bp->pdev->dev;
+	unsigned long flags;
+	netdev_tx_t ret = NETDEV_TX_OK;
+	u32 tsr = 0;
+	int desc;
 
-	if (macb_readl(bp, TSR) & MACB_BIT(RM9200_BNQ)) {
-		int desc = 0;
+	spin_lock_irqsave(&bp->lock, flags);
 
-		netif_stop_queue(netdev);
+	/* txq is full but xmit got called somehow */
+	if (bp->rm9200_tx_len == bp->rm9200_txq_len)
+		goto busy;
 
-		/* Store packet information (to free when Tx completed) */
-		bp->rm9200_txq[desc].skb = skb;
-		bp->rm9200_txq[desc].size = skb->len;
-		bp->rm9200_txq[desc].mapping = dma_map_single(dev, skb->data,
-							      skb->len,
-							      DMA_TO_DEVICE);
-		if (dma_mapping_error(dev, bp->rm9200_txq[desc].mapping)) {
-			dev_kfree_skb_any(skb);
-			netdev->stats.tx_dropped++;
-			netdev_err(netdev, "%s: DMA mapping error\n", __func__);
-			return NETDEV_TX_OK;
-		}
-
-		/* Set address of the data in the Transmit Address register */
-		macb_writel(bp, TAR, bp->rm9200_txq[desc].mapping);
-		/* Set length of the packet in the Transmit Control register */
-		macb_writel(bp, TCR, skb->len);
-
-	} else {
-		netdev_err(netdev, "%s called, but device is busy!\n",
-			   __func__);
-		return NETDEV_TX_BUSY;
+	/* check TSR just in case we lost track */
+	tsr = macb_readl(bp, TSR);
+	if (bp->caps & MACB_CAPS_MSTAR_TXQ) {
+		if (msc313_txqfree(tsr) == 0)
+			goto busy_quiet;
+	} else if (at91ether_txqfree(tsr) == 0) {
+		goto busy;
 	}
 
-	return NETDEV_TX_OK;
+	/* Store packet information (to free when Tx completed) */
+	desc = bp->rm9200_tx_tail;
+	bp->rm9200_txq[desc].skb = skb;
+	bp->rm9200_txq[desc].size = skb->len;
+	bp->rm9200_txq[desc].mapping = dma_map_single(dev, skb->data,
+						      skb->len,
+						      DMA_TO_DEVICE);
+	if (dma_mapping_error(dev, bp->rm9200_txq[desc].mapping)) {
+		dev_kfree_skb_any(skb);
+		netdev->stats.tx_dropped++;
+		netdev_err(netdev, "%s: DMA mapping error\n", __func__);
+		goto out;
+	}
+
+	/* Set address of the data in the Transmit Address register */
+	macb_writel(bp, TAR, bp->rm9200_txq[desc].mapping);
+	/* Set length of the packet in the Transmit Control register */
+	macb_writel(bp, TCR, skb->len);
+
+	/* Pretty sure the frame is actually going to be transmitted now */
+	bp->rm9200_tx_tail = (desc + 1) % bp->rm9200_txq_len;
+	bp->rm9200_tx_len++;
+
+	/* Stop the queue if we are full up */
+	if (bp->rm9200_tx_len == bp->rm9200_txq_len)
+		netif_stop_queue(netdev);
+
+	goto out;
+
+busy:
+	netdev_dbg(netdev, "%s called, but device is busy, tsr: %08x\n",
+		   __func__, tsr);
+busy_quiet:
+	netdev->stats.tx_errors++;
+	ret = NETDEV_TX_BUSY;
+out:
+	spin_unlock_irqrestore(&bp->lock, flags);
+	return ret;
 }
 
 /* Extract received frame from buffer descriptors and sent to upper layers.
@@ -5664,16 +5803,28 @@ static irqreturn_t at91ether_interrupt(int irq, void *dev_id)
 {
 	struct net_device *netdev = dev_id;
 	struct macb *bp = netdev_priv(netdev);
-	u32 intstatus, ctl;
-	unsigned int desc;
+	u32 intstatus, ctl, jstatus = 0;
+	unsigned int desc, qlen, tsr;
+
+	spin_lock(&bp->lock);
 
 	/* MAC Interrupt Status register indicates what interrupts are pending.
 	 * It is automatically cleared once read.
 	 */
 	intstatus = macb_readl(bp, ISR);
 
+	/*
+	 * MStar/SigmaStar: receive completion arrives as the "RX delay" bit in
+	 * JULIAN 0x108, not as RCOM (the vendor 4.9 HAL merges it into its
+	 * interrupt status in MHal_EMAC_IntStatus()).  Reading 0x108 also
+	 * clears the pending bit.
+	 */
+	if (bp->caps & MACB_CAPS_MSTAR_RIU)
+		jstatus = macb_readl(bp, MSC313_JULIAN_108);
+
 	/* Receive complete */
-	if (intstatus & MACB_BIT(RCOMP))
+	if ((intstatus & MACB_BIT(RCOMP)) ||
+	    (jstatus & MACB_MSC313_J108_RX_DELAY))
 		at91ether_rx(netdev);
 
 	/* Transmit complete */
@@ -5682,8 +5833,15 @@ static irqreturn_t at91ether_interrupt(int irq, void *dev_id)
 		if (intstatus & (MACB_BIT(ISR_TUND) | MACB_BIT(ISR_RLE)))
 			netdev->stats.tx_errors++;
 
-		desc = 0;
-		if (bp->rm9200_txq[desc].skb) {
+		tsr = macb_readl(bp, TSR);
+		if (bp->caps & MACB_CAPS_MSTAR_TXQ)
+			qlen = msc313_txqfree(tsr);
+		else
+			qlen = at91ether_txqfree(tsr);
+
+		while (bp->rm9200_tx_len > 0 && qlen > 0) {
+			desc = (bp->rm9200_tx_tail - bp->rm9200_tx_len) %
+			       bp->rm9200_txq_len;
 			dev_consume_skb_irq(bp->rm9200_txq[desc].skb);
 			bp->rm9200_txq[desc].skb = NULL;
 			dma_unmap_single(&bp->pdev->dev,
@@ -5692,8 +5850,14 @@ static irqreturn_t at91ether_interrupt(int irq, void *dev_id)
 					 DMA_TO_DEVICE);
 			netdev->stats.tx_packets++;
 			netdev->stats.tx_bytes += bp->rm9200_txq[desc].size;
+
+			bp->rm9200_tx_len--;
+			qlen--;
 		}
-		netif_wake_queue(netdev);
+
+		if (bp->rm9200_tx_len < bp->rm9200_txq_len &&
+		    netif_queue_stopped(netdev))
+			netif_wake_queue(netdev);
 	}
 
 	/* Work-around for EMAC Errata section 41.3.1 */
@@ -5706,6 +5870,8 @@ static irqreturn_t at91ether_interrupt(int irq, void *dev_id)
 
 	if (intstatus & MACB_BIT(ISR_ROVR))
 		netdev_err(netdev, "ROVR error\n");
+
+	spin_unlock(&bp->lock);
 
 	return IRQ_HANDLED;
 }
@@ -5783,6 +5949,79 @@ static int at91ether_init(struct platform_device *pdev)
 
 	return 0;
 }
+
+#ifdef CONFIG_ARCH_MSTARV7
+/*
+ * U-Boot's eth_halt() disables the hardware TX queue on the MStar EMAC; put
+ * the enable bit back or every TAR/TCR insertion is silently dropped (M1
+ * hardware finding; sstar_udp does exactly this for the blind console).
+ * The queue word at RIU byte 0x248 is accessed raw on purpose: it is a
+ * 32-bit read-modify-write across the two adjacent 16-bit EMAC1 registers
+ * that U-Boot itself uses.
+ */
+static void msc313_emac1_txq_enable(struct macb *bp)
+{
+	u32 txq;
+
+	txq = readl(bp->regs + MACB_MSC313_EMAC1_TXQ) & 0xffff;
+	writel(txq | MACB_MSC313_EMAC1_TXQ_EN,
+	       bp->regs + MACB_MSC313_EMAC1_TXQ);
+}
+
+/*
+ * Infinity6B0-class (SSC335) setup, after the vendor 4.9 HAL's
+ * MHal_EMAC_HW_init(): enable the TX queue, switch the receiver to software
+ * descriptors and program the RX delay batching parameters.  JULIAN 0x100
+ * (MII/RMII path and MIU reset state) is left exactly as U-Boot programmed
+ * it, because the bootloader's tftpboot already ran on this PHY.
+ */
+static int msc313e_init(struct platform_device *pdev)
+{
+	struct net_device *netdev = platform_get_drvdata(pdev);
+	struct macb *bp = netdev_priv(netdev);
+
+	u32 ncfgr;
+	int err;
+
+	msc313_emac1_txq_enable(bp);
+
+	bp->macb_reg_writel(bp, MACB_MSC313_JULIAN_104,
+			    0x10020000 | MACB_MSC313_J104_SW_DESC);
+
+	err = at91ether_init(pdev);
+	if (err)
+		return err;
+
+	/*
+	 * at91ether_init() hard-codes the MACB MDC divider to pclk/32, which is
+	 * ~4.5 MHz on this SoC (pclk ~144 MHz) and above the 802.3 MDC limit
+	 * of 2.5 MHz.  Use pclk/64 (~2.25 MHz) so the internal PHY's MDIO
+	 * register accesses are in spec; the qemu-bench model ignores the
+	 * divider, so this only matters on real silicon.
+	 */
+	ncfgr = bp->macb_reg_readl(bp, MACB_NCFGR);
+	ncfgr = MACB_BFINS(CLK, MACB_CLK_DIV64, ncfgr);
+	bp->macb_reg_writel(bp, MACB_NCFGR, ncfgr);
+
+	return 0;
+}
+
+/*
+ * MSC313 (Infinity) setup, ported from linux-chenxing/mstar_v6_7_rebase
+ * ("macb: don't rely on u-boot to fix the rx descriptors"): the older die
+ * additionally needs the software RX descriptor switch in the EMAC1 bank.
+ */
+static int msc313_init(struct platform_device *pdev)
+{
+	struct net_device *netdev = platform_get_drvdata(pdev);
+	struct macb *bp = netdev_priv(netdev);
+
+	macb_writel(bp, MSC313_13A, 0x100);
+	macb_writel(bp, MSC313_JULIAN_104, MACB_MSC313_J104_SW_DESC);
+
+	return at91ether_init(pdev);
+}
+#endif
 
 static unsigned long fu540_macb_tx_recalc_rate(struct clk_hw *hw,
 					       unsigned long parent_rate)
@@ -6099,6 +6338,7 @@ static const struct macb_config emac_config = {
 	.clk_init = at91ether_clk_init,
 	.init = at91ether_init,
 	.usrio = &at91_default_usrio,
+	.rm9200_txq_len = 2,
 };
 
 static const struct macb_config np4_config = {
@@ -6196,6 +6436,26 @@ static const struct macb_config pic64hpsc_config = {
 	.jumbo_max_len = 16383,
 };
 
+#ifdef CONFIG_ARCH_MSTARV7
+static const struct macb_config msc313_config = {
+	.caps = MACB_CAPS_NEEDS_RSTONUBR | MACB_CAPS_MACB_IS_EMAC |
+		MACB_CAPS_MSTAR_RIU | MACB_CAPS_MSTAR_TXQ,
+	.clk_init = msc313_clk_init,
+	.init = msc313_init,
+	.usrio = &at91_default_usrio,
+	.rm9200_txq_len = 4,
+};
+
+static const struct macb_config msc313e_config = {
+	.caps = MACB_CAPS_NEEDS_RSTONUBR | MACB_CAPS_MACB_IS_EMAC |
+		MACB_CAPS_MSTAR_RIU | MACB_CAPS_MSTAR_TXQ,
+	.clk_init = msc313_clk_init,
+	.init = msc313e_init,
+	.usrio = &at91_default_usrio,
+	.rm9200_txq_len = 4,
+};
+#endif
+
 static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "cdns,at91sam9260-macb", .data = &at91sam9260_config },
 	{ .compatible = "cdns,macb" },
@@ -6222,6 +6482,10 @@ static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "xlnx,zynqmp-gem", .data = &zynqmp_config},
 	{ .compatible = "xlnx,zynq-gem", .data = &zynq_config },
 	{ .compatible = "xlnx,versal-gem", .data = &versal_config},
+#ifdef CONFIG_ARCH_MSTARV7
+	{ .compatible = "mstar,msc313-emac", .data = &msc313_config },
+	{ .compatible = "mstar,msc313e-emac", .data = &msc313e_config },
+#endif
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, macb_dt_ids);
@@ -6301,6 +6565,31 @@ static int macb_probe(struct platform_device *pdev)
 	} else {
 		bp->macb_reg_readl = hw_readl;
 		bp->macb_reg_writel = hw_writel;
+	}
+
+#ifdef CONFIG_ARCH_MSTARV7
+	/*
+	 * MStar/SigmaStar EMAC: all registers go through the 16-bit RIU
+	 * view.  Swap the accessors in before the driver reads the MAC
+	 * address U-Boot left programmed (macb_get_hwaddr() below) or
+	 * programs anything else.
+	 */
+	if (macb_config->caps & MACB_CAPS_MSTAR_RIU) {
+		bp->macb_reg_readl = hw_readl_riu;
+		bp->macb_reg_writel = hw_writel_riu;
+	}
+#endif
+
+	/*
+	 * AT91RM9200-style software TX queue: two slots on AT91, four on
+	 * the MStar EMAC (whose hardware TX FIFO is four slots deep).
+	 */
+	bp->rm9200_txq_len = macb_config->rm9200_txq_len ?: 2;
+	bp->rm9200_txq = devm_kcalloc(&pdev->dev, bp->rm9200_txq_len,
+				      sizeof(*bp->rm9200_txq), GFP_KERNEL);
+	if (!bp->rm9200_txq) {
+		err = -ENOMEM;
+		goto err_out_free_netdev;
 	}
 	bp->num_queues = num_queues;
 	bp->dma_burst_length = macb_config->dma_burst_length;

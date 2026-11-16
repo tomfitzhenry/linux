@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * TP-Link Tapo C212 v2 (SigmaStar SSC335, Infinity6B0, QFN88)
+ *
+ * M1 bring-up board file: memory map, the post-mortem reserved regions
+ * and the console wiring.  Peripherals (EMAC, SPI NOR, GPIO, camera, ...)
+ * are added in later milestones; retyping `reg`/`compatible` here is
+ * enough because the SoC file carries the full mainline skeleton.
+ *
+ * Reserved memory: the real IPL runs an MIU BIST that wipes
+ * 0x20000000..0x23efffff (63 MiB) on *every* reset, and U-Boot relocates
+ * itself to 0x23f20000..0x23fef460, so the only DRAM the boot chain
+ * preserves for us is the top of the 64 MiB part:
+ *
+ *   0x23ff3000..0x23ff3fff  4 KiB  sstar_udp earlycon TX bounce page
+ *   0x23ff4000..0x23ffbfff 32 KiB  ramoops (uncached, mem-type 1)
+ *
+ * Both are no-map so the kernel never reuses them for something else; the
+ * earlycon ioremaps its page, pstore/ram ioremaps the ramoops region.
+ */
+
+/dts-v1/;
+
+#include "mstar-infinity6b0.dtsi"
+
+/ {
+	model = "TP-Link Tapo C212 v2";
+	compatible = "sstar,infinity6b0", "mstar,infinity6b0";
+
+	aliases {
+		serial0 = &uart0;
+		ethernet0 = &emac0;
+	};
+
+	chosen {
+		/*
+		 * Overridden by the cmdline U-Boot passes in ATAGs (the
+		 * installed U-Boot has no OF_LIBFDT, so it boots zImage +
+		 * appended DTB and hands over bootargs via ATAGs), but kept
+		 * useful for a direct -kernel/-append QEMU boot.
+		 */
+		bootargs = "console=ttyS0,115200 earlycon=sstar_udp c212.sleep=5 clk_ignore_unused";
+	};
+
+	memory@20000000 {
+		device_type = "memory";
+		reg = <0x20000000 0x04000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* EMAC register-dump page for post-mortem comparison. */
+		earlycon-udp-dump@23ff0000 {
+			reg = <0x23ff0000 0x1000>;
+			no-map;
+		};
+
+		/* MAC loopback RX self-test page (one descriptor + 2 KiB). */
+		earlycon-udp-rxtest@23ff1000 {
+			reg = <0x23ff1000 0x1000>;
+			no-map;
+		};
+
+		/* M1 bring-up black box: MAC/PHY state for the fallback boot. */
+		earlycon-udp-blackbox@23ff2000 {
+			reg = <0x23ff2000 0x1000>;
+			no-map;
+		};
+
+		/* Fourth-last page: sstar_udp earlycon frame buffer. */
+		earlycon-udp@23ff3000 {
+			reg = <0x23ff3000 0x1000>;
+			no-map;
+		};
+
+		/* Last-but-one 32 KiB: crash log that survives the WDT. */
+		ramoops@23ff4000 {
+			compatible = "ramoops";
+			reg = <0x23ff4000 0x8000>;
+			record-size = <0x1000>;
+			console-size = <0x4000>;
+			pmsg-size = <0x1000>;
+			mem-type = <1>;
+		};
+	};
+};
+
+/*
+ * The EMAC and its internal "Albany" PHY were brought up by U-Boot for the
+ * TFTP boot; the kernel only has to take them over.
+ *
+ * The MAC address is pinned here because the probe-time RIU read of the
+ * EMAC's SA1 registers does not return what U-Boot programmed: on real
+ * silicon the upper half of SA1L comes back as a locally-administered
+ * value whose byte 2 varies per boot (observed 02:00:e6:00:12:02 then
+ * 02:00:6e:00:12:02), even though the installed U-Boot env and the vendor
+ * 4.9 kernel both use 02:00:00:c2:12:02.  Reading the MAC from the U-Boot
+ * env partition in SPI NOR (or the SoC efuse) is the proper fix and lands
+ * with the flash work in M3; until then this board file pins the owner's
+ * unit MAC so eth0 keeps a stable identity (and netconsole a stable
+ * source MAC).
+ */
+&emac0 {
+	status = "okay";
+	local-mac-address = [02 00 00 c2 12 02];
+};

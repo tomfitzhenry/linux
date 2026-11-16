@@ -503,4 +503,13 @@ config XILINX_GMII2RGMII
 	  the Reduced Gigabit Media Independent Interface(RGMII) between
 	  Ethernet physical media devices and the Gigabit Ethernet controller.
 
+config MSC313_PHY
+	tristate "MStar MSC313/MSC313E internal PHY"
+	depends on OF_MDIO
+	help
+	  Support for the internal 10/100 "Albany" Ethernet PHY found in
+	  MStar/SigmaStar MSC313, MSC313E (Infinity3) and SSC335
+	  (Infinity6B0) SoCs.  The analog front end is controlled through
+	  the SoC's PHYANA syscon block.
+
 endif # PHYLIB

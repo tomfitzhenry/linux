@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * SigmaStar Infinity6B0 (SSC335 / SSC333 / SSC337) SoC
+ *
+ * The Infinity6B0 die is an Armv7 Cortex-A7 with 64 MiB of integrated
+ * DDR2, a GIC-400, the MStar "main-intc" (64 IRQ + 32 FIQ lines), the
+ * PIU timers/watchdog bank and a 16550-with-USR UART, on the same
+ * backbone as the other Infinity/Mercury parts already described in
+ * mstar-v7.dtsi, so it starts from that file.
+ *
+ * Register and IRQ numbers are taken from the vendor 4.9 tree on the
+ * OpenIPC branch (openipc/sigmastar-infinity6b0:
+ * arch/arm/boot/dts/infinity6b0.dtsi and
+ * drivers/sstar/include/infinity6b0/irqs.h), whose GIC_SPI numbering for
+ * the main-intc group is 32 + (relative line), e.g. UART0 = SPI 66 =
+ * relative 34, EMAC = SPI 58 = relative 26, and the MS_FIQ group
+ * (timer/watchdog) starts at SPI 96 = relative 0 in intc_fiq.
+ *
+ * Board files (like mstar-infinity6b0-ssc335-tapo-c212-v2.dts) provide
+ * the memory node and the chosen/bootargs.
+ */
+
+#include "mstar-v7.dtsi"
+
+#include <dt-bindings/clock/mstar-msc313-sc-gp.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	pmu {
+		/* The Cortex-A7 PMU lines on this die are not the msc313 ones. */
+		status = "disabled";
+	};
+
+	soc: soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/*
+		 * SigmaStar DMA masters (EMAC, BDMA, FCIE, BACH, VIF, JPE,
+		 * VENC, ...) address DDR2 starting at bus address 0, while
+		 * the CPU sees it at 0x20000000; subtract that exactly once,
+		 * here, so every driver writes CPU physical addresses.
+		 */
+		dma-ranges = <0x0 0x20000000 0x04000000>;
+	};
+};
+
+&clocks {
+	/*
+	 * Clocks feeding the Ethernet MAC.  U-Boot leaves all of them
+	 * running (it TFTP-boots over this MAC); these placeholders only
+	 * have to exist so the macb driver can enable them through the
+	 * clock framework.  emac_ahb is CLKGEN's EMAC_AHB output and, with
+	 * the reset mux value, the MPLL 288 MHz / 2 = 144 MHz branch
+	 * (openipc/sigmastar-infinity6b0 infinity6b0-clks.dtsi
+	 * CLK_emac_ahb/CLK_mpll_288m_div2).  eth_buf/rmii_buf are the
+	 * SC_GP_CTRL mux inputs from the internal PHY / the RMII reference.
+	 */
+	emac_ahb: emac-ahb-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <144000000>;
+	};
+
+	eth_buf: eth-buf-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <25000000>;
+	};
+
+	rmii_buf: rmii-buf-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <50000000>;
+	};
+};
+
+/*
+ * The main-intc domain's MS_IRQ group is relative lines 0..63 (GIC SPI
+ * 32..95, mstar-v7.dtsi's intc_irq node); the MS_FIQ group is relative
+ * lines 0..31 (GIC SPI 96..127, intc_fiq).  Everything below uses the
+ * relative numbers its interrupt-parent domain expects.
+ */
+
+&imi {
+	/* 96 KiB of internal IMI SRAM, 0xa0000000..0xa0017fff. */
+	reg = <0xa0000000 0x18000>;
+};
+
+&riu {
+	/*
+	 * PIU timer 0 (byte 0x1F006040): the vendor kernel uses it as an
+	 * always-on clocksource/clockevent next to the Arm arch timer.
+	 * MS_FIQ line 0 = timer 0.
+	 */
+	timer@6040 {
+		compatible = "mstar,msc313e-timer";
+		reg = <0x6040 0x40>;
+		clocks = <&xtal_div2>;
+		interrupts-extended = <&intc_fiq GIC_SPI 0 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
+	/*
+	 * UART0 at 0x1F221000: a 16550 whose registers sit 8 bytes apart
+	 * with the DesignWare-style USR in the byte 0x38 slot, plus its
+	 * own clock from the MPLL (172.8 MHz here).  The retail C212 v2
+	 * has no UART pads routed, but qemu-bench models this port as the
+	 * console, and the installed U-Boot leaves UART0 initialised.
+	 * MS_IRQ line 34 = UART0.
+	 */
+	uart0: serial@221000 {
+		compatible = "mstar,msc313-uart";
+		reg = <0x221000 0x100>;
+		reg-shift = <3>;
+		reg-io-width = <1>;
+		clock-frequency = <172800000>;
+		interrupts-extended = <&intc_irq GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+		status = "okay";
+	};
+
+	/*
+	 * Ethernet.  The EMAC is an AT91RM9200-style MACB behind the MStar
+	 * 16-bit RIU: only the RIU window is described, the driver's doubled
+	 * offsets address the low/high halves of every 32-bit register.
+	 * MS_IRQ line 26 = EMAC (GIC SPI 58).
+	 *
+	 * The internal "Albany" 10/100 PHY is not on a board MDIO bus: it is
+	 * the MAC's own PHY at address 0, reached through the MAC's
+	 * management port, with its analog front end in the PHYANA RIU block
+	 * at 0x1F006200 (0x600, three 0x200 banks).
+	 */
+	phyana: syscon@6200 {
+		compatible = "syscon";
+		reg = <0x6200 0x600>;
+	};
+
+	/*
+	 * SC_GP_CTRL (0x1F226600) holds the Ethernet TX/RX clock muxes: the
+	 * driver needs the parent RIU syscon, hence it lives under &riu.
+	 */
+	sc_gp_ctrl_muxes: clock-controller@226600 {
+		compatible = "mstar,msc313-sc-gp-ctrl-muxes";
+		reg = <0x226600 0x1000>;
+		#clock-cells = <1>;
+		clock-names = "eth_buf", "rmii_buf";
+		clocks = <&eth_buf>, <&rmii_buf>;
+	};
+
+	emac0: ethernet@2a2000 {
+		compatible = "mstar,msc313e-emac";
+		reg = <0x2a2000 0x800>;
+		interrupts-extended = <&intc_irq GIC_SPI 26 IRQ_TYPE_LEVEL_HIGH>;
+		phy-mode = "mii";
+		clock-names = "pclk", "hclk", "tx_clk", "rx_clk";
+		clocks = <&emac_ahb>, <&emac_ahb>,
+			 <&sc_gp_ctrl_muxes MSC313_SC_GP_EMAC_TX>,
+			 <&sc_gp_ctrl_muxes MSC313_SC_GP_EMAC_RX>;
+		assigned-clocks = <&sc_gp_ctrl_muxes MSC313_SC_GP_EMAC_RX_MUX>,
+				  <&sc_gp_ctrl_muxes MSC313_SC_GP_EMAC_TX_MUX>;
+		assigned-clock-parents = <&eth_buf>, <&eth_buf>;
+		phy-handle = <&emac0_phy>;
+		status = "disabled";
+
+		mdio {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			emac0_phy: ethernet-phy@0 {
+				compatible = "ethernet-phy-id1111.2222",
+					     "ethernet-phy-ieee802.3-c22";
+				reg = <0>;
+				mstar,pmsleep = <&pmsleep>;
+				mstar,phyana = <&phyana>;
+			};
+		};
+	};
+};
+
+/ {
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+};

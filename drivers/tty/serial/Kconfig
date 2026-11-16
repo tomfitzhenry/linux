@@ -94,8 +94,144 @@ config SERIAL_EARLYCON_RISCV_SBI
 	help
 	  Support for early debug console using RISC-V SBI. This enables
 	  the console before standard serial driver is probed. This is enabled
+	  the console before standard serial driver is probed. This is enabled
 	  with "earlycon=sbi" on the kernel command line. The console is
 	  enabled when early_param is processed.
+
+config SERIAL_EARLYCON_SSSTAR_UDP
+	bool "SigmaStar UDP early console"
+	depends on ARCH_MSTARV7 || COMPILE_TEST
+	depends on FIX_EARLYCON_MEM
+	select SERIAL_CORE
+	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
+	help
+	  Say Y here to enable the blind-console early console used on
+	  SigmaStar SSC335/Infinity6B0 boards without a UART.  It streams
+	  every printk line as an Ethernet + IPv4 + UDP frame out of a
+	  single-packet transmit slot of the on-chip Ethernet MAC, in the
+	  state a bootloader (U-Boot's tftpboot) left it in: clocks, MAC
+	  address and PHY link up, transmitter disabled.  The frame buffer
+	  is a physically fixed, reserved and uncached page.
+
+	  This is enabled with "earlycon=sstar_udp" on the kernel command
+	  line, optionally followed by the MAC register base, for example
+	  "earlycon=sstar_udp,0x1f343c00".  It is a debugging facility: it
+	  has no flow control or retransmission and depends entirely on the
+	  bootloader's MAC/PHY hand-off.
+
+	  If unsure, say N.
+
+if SERIAL_EARLYCON_SSSTAR_UDP
+
+config SERIAL_EARLYCON_SSSTAR_UDP_DEBUG
+	bool "M1 hardware bring-up debug scaffolding"
+	default n
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	help
+	  MAC loopback self-test and EMAC/PHY register dump for bringing the
+	  blind console up on real silicon without a UART.  Off by default; the
+	  results are only useful together with the black box and the post-
+	  fallback devmem reads described in docs/mainline/report/M1.md.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
+	bool "Keep the UDP console after real consoles register"
+	default n
+	help
+	  A boot console is normally unregistered as soon as a real console
+	  registers.  On the retail C212 v2 UART0 has no pads, so ttyS0 can
+	  still become the default console and would silently take the only
+	  readable console away.  With this option the sstar_udp console
+	  drops its CON_BOOT flag and stays registered next to ttyS0, i.e.
+	  the UDP stream keeps carrying the whole dmesg.  This was needed in
+	  M1, where the blind console was the only readable output.  It must
+	  be N once the real Ethernet driver owns the MAC: the console writes
+	  the EMAC's single-packet TX slot directly and would fight macb.  In
+	  M2 the CON_BOOT console detaches when ttyS0 registers, netconsole
+	  takes over the logging, and the initramfs replays dmesg into it.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+	bool "Record EMAC/PHY state in a reserved DRAM page"
+	default n
+	help
+	  Leave the MAC/PHY register state, frame counters and the last frame
+	  buffer words in a reserved DRAM page so a hardware boot without UART
+	  can be debugged by reading it back from the OpenIPC fallback boot
+	  (busybox devmem).  Harmless, but not needed in production.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX_PHYS
+	hex "SigmaStar UDP earlycon black box page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+	default 0x23ff2000
+	help
+	  Physical page used for the black box.  Must be above the IPL MIU
+	  BIST wipe (0x23efffff) and outside U-Boot's relocation region
+	  (0x23f20000..0x23fef460); keep it reserved/no-map in the DTS.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_RXTEST_PHYS
+	hex "SigmaStar UDP earlycon RX self-test page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	default 0x23ff1000
+	help
+	  Physical page for the MAC loopback RX self-test (one descriptor
+	  plus one 2 KiB buffer).  Must be reserved/no-map in the DTS.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_DUMP_PHYS
+	hex "SigmaStar UDP earlycon register dump page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	default 0x23ff0000
+	help
+	  Physical page receiving the X32 and RIU EMAC register dumps for
+	  post-mortem comparison against the live vendor driver.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_EMAC_BASE
+	hex "SigmaStar EMAC X32 register base address"
+	default 0x1f343c00
+	help
+	  Physical base of the 32-bit ("X32") view of the SigmaStar
+	  Ethernet MAC.  Can be overridden on the command line.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_FRAME_PHYS
+	hex "Physical address of the UDP frame buffer page"
+	default 0x23ff3000
+	help
+	  Physical address of the 4 KiB page the driver formats frames in.
+	  It must be reserved in the device tree (no-map) so that neither
+	  the kernel nor the bootloader's own data uses it.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_L3BRIDGE_BASE
+	hex "SigmaStar L3 bridge register base address"
+	default 0x1f204400
+	help
+	  Physical base of the SigmaStar L3 bridge block, whose MIU write
+	  pipe must be flushed before the MAC DMA engine reads a frame.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_SRC_MAC
+	string "Source MAC address of the UDP frames"
+	default "02:00:00:c2:12:02"
+	help
+	  Ethernet source address of the UDP frames.  This is the camera
+	  MAC address that the bootloader programmed into the MAC.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_SRC_IP
+	string "Source IPv4 address of the UDP frames"
+	default "172.17.1.99"
+
+config SERIAL_EARLYCON_SSSTAR_UDP_DST_IP
+	string "Destination IPv4 address of the UDP frames"
+	default "172.17.1.161"
+
+config SERIAL_EARLYCON_SSSTAR_UDP_SRC_PORT
+	int "Source UDP port of the UDP frames"
+	range 1 65535
+	default 6666
+
+config SERIAL_EARLYCON_SSSTAR_UDP_DST_PORT
+	int "Destination UDP port of the UDP frames"
+	range 1 65535
+	default 6666
+
+endif # SERIAL_EARLYCON_SSSTAR_UDP
 
 config SERIAL_SB1250_DUART
 	tristate "BCM1xxx on-chip DUART serial support"
