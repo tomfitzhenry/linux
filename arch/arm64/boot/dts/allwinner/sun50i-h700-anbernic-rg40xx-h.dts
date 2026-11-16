@@ -105,3 +105,16 @@
 &hdmi {
 	status = "disabled";
 };
+
+/*
+ * The RTL8821CS SDIO Wi-Fi is the only suspend-aware consumer of the mmc1
+ * host: its driver (rtw88_8821cs) calls sdio_set_host_pm_flags(...,
+ * MMC_PM_KEEP_POWER) during system sleep, which fails with -EINVAL unless the
+ * host advertises that capability.  The board keeps vcc-wifi (CLDO4) powered
+ * in sleep anyway, so advertise keep-power-in-suspend; without it every
+ * s2idle entry aborts ("Some devices failed to suspend") and the board never
+ * suspends.  See docs/power.md.
+ */
+&mmc1 {
+	keep-power-in-suspend;
+};
