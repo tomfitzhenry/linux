@@ -31,6 +31,7 @@
 #include "sun4i_framebuffer.h"
 #include "sun4i_tcon.h"
 #include "sun8i_tcon_top.h"
+#include "sunxi_engine.h"
 
 static int drm_sun4i_gem_dumb_create(struct drm_file *file_priv,
 				     struct drm_device *drm,
@@ -78,6 +79,7 @@ static int sun4i_drv_bind(struct device *dev)
 	drm->dev_private = drv;
 	INIT_LIST_HEAD(&drv->frontend_list);
 	INIT_LIST_HEAD(&drv->engine_list);
+	INIT_LIST_HEAD(&drv->engine_pm_list);
 	INIT_LIST_HEAD(&drv->tcon_list);
 
 	ret = of_reserved_mem_device_init(dev);
@@ -346,16 +348,64 @@ static int sun4i_drv_add_endpoints(struct device *dev,
 }
 
 #ifdef CONFIG_PM_SLEEP
+static int sun4i_drv_resume_resources(struct drm_device *drm)
+{
+	struct sun4i_drv *drv = drm->dev_private;
+	struct sunxi_engine_pm *pm;
+	struct sun4i_tcon *tcon;
+	int ret;
+
+	list_for_each_entry(pm, &drv->engine_pm_list, list) {
+		ret = pm->resume(pm->engine);
+		if (ret)
+			return ret;
+	}
+	list_for_each_entry(tcon, &drv->tcon_list, list) {
+		ret = sun4i_tcon_resume(tcon);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
 static int sun4i_drv_drm_sys_suspend(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
+	struct sun4i_drv *drv = drm->dev_private;
+	struct sunxi_engine_pm *pm;
+	struct sun4i_tcon *tcon;
+	int ret, restore_ret;
 
-	return drm_mode_config_helper_suspend(drm);
+	ret = drm_mode_config_helper_suspend(drm);
+	if (ret)
+		return ret;
+
+	list_for_each_entry(tcon, &drv->tcon_list, list)
+		sun4i_tcon_suspend(tcon);
+	list_for_each_entry(pm, &drv->engine_pm_list, list) {
+		ret = pm->suspend(pm->engine);
+		if (ret)
+			goto err_restore;
+	}
+	return 0;
+
+err_restore:
+	restore_ret = sun4i_drv_resume_resources(drm);
+	if (!restore_ret)
+		restore_ret = drm_mode_config_helper_resume(drm);
+	if (restore_ret)
+		dev_err(dev, "Display suspend rollback failed: %d\n", restore_ret);
+	return ret;
 }
 
 static int sun4i_drv_drm_sys_resume(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
+	int ret;
+
+	ret = sun4i_drv_resume_resources(drm);
+	if (ret)
+		return ret;
 
 	return drm_mode_config_helper_resume(drm);
 }
@@ -440,6 +490,7 @@ static const struct of_device_id sun4i_drv_of_table[] = {
 	{ .compatible = "allwinner,sun20i-d1-display-engine" },
 	{ .compatible = "allwinner,sun50i-a64-display-engine" },
 	{ .compatible = "allwinner,sun50i-h6-display-engine" },
+	{ .compatible = "allwinner,sun50i-h616-display-engine" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sun4i_drv_of_table);

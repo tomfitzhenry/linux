@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * Copyright (C) 2026 Tom Fitzhenry <tom@tom-fitzhenry.me.uk>
+ */
+
+#include "sun50i-h700-anbernic-rg35xx-h.dts"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Anbernic RG40XX H";
+	compatible = "anbernic,rg40xx-h", "allwinner,sun50i-h700";
+};
+
+/*
+ * The RG40XX-H reuses the RG35XX-H joystick mux wiring (PI1/PI2 select,
+ * PI0 enable), but its sticks are wired the other way round: the ROCKNIX
+ * RG40XX-H board DTS sets invert-absx/y/rx/ry, i.e. all four axes run
+ * inverted relative to the ADC's raw direction.  ABS_X and ABS_RY already
+ * inherit <4096 0> (inverted) from the RG35XX-H base, so only ABS_Y and
+ * ABS_RX need overriding here.
+ */
+&{/adc-joystick/axis@1} {
+	abs-range = <4096 0>;
+};
+
+&{/adc-joystick/axis@2} {
+	abs-range = <4096 0>;
+};
+
+/*
+ * On the RG40XX-H PI7 drives the RGB keyboard-backlight LED rather than
+ * the RG35XX-H's vcc5v0-usb enable, so retire that regulator before
+ * claiming the pin for the LED.  The usb1_vbus-supply has to go with it:
+ * devm_regulator_get_optional() on a disabled regulator node returns
+ * -EPROBE_DEFER forever, which wedges the whole H616 USB PHY probe and,
+ * with it, the MUSB gadget.  With no supply the PHY skips vbus and usb0
+ * still enumerates.
+ */
+&reg_vcc5v0_usb {
+	status = "disabled";
+};
+
+&usbphy {
+	/delete-property/ usb1_vbus-supply;
+};
+
+&leds {
+	led-rgb {
+		function = LED_FUNCTION_KBD_BACKLIGHT;
+		color = <LED_COLOR_ID_RGB>;
+		gpios = <&pio 8 7 GPIO_ACTIVE_HIGH>; /* PI7 */
+	};
+};
+
+&pio {
+	vcc-pd-supply = <&reg_cldo3>;
+
+	uart5_ph_pins: uart5-ph-pins {
+		pins = "PH2", "PH3";
+		function = "uart5";
+	};
+};
+
+/* Secondary UART exposed on the RG40XX-H test pads. */
+&uart5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_ph_pins>;
+	status = "okay";
+};
+
+&r_i2c {
+	pcf8563: rtc@51 {
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+		#clock-cells = <0>;
+	};
+};
+
+&{/aliases} {
+	serial1 = &uart5;
+	rtc0 = &pcf8563;
+	rtc1 = &rtc;
+	/* Keep the microSD as mmcblk0 (root= and NixOS expect it) even
+	 * though the now-working SDIO Wi-Fi host probes first. */
+	mmc0 = &mmc0;
+	mmc1 = &mmc1;
+};
+
+/*
+ * The shared H700 RGB-panel plumbing (pwm-backlight, the vdd-lcd regulator
+ * and the SPI-initialised panel node) comes from the RG35XX-2024 base; this
+ * board carries the v2 panel, so pin its compatible here.  panel-mipi derives
+ * the firmware filename, panels/<compatible>.panel, from the first string.
+ */
+&panel {
+	compatible = "anbernic,rg40xx-v2-panel", "panel-mipi-dpi-spi";
+};
+
+/*
+ * The RG40XX-H has no HDMI.  The base DTS enables the HDMI output, but the
+ * DW-HDMI driver is a module and the initramfs loads no modules, so the sun4i
+ * component master would defer forever waiting for it.  Disable it here.
+ */
+&hdmi {
+	status = "disabled";
+};
+
+/*
+ * The RTL8821CS SDIO Wi-Fi is the only suspend-aware consumer of the mmc1
+ * host: its driver (rtw88_8821cs) calls sdio_set_host_pm_flags(...,
+ * MMC_PM_KEEP_POWER) during system sleep, which fails with -EINVAL unless the
+ * host advertises that capability.  The board keeps vcc-wifi (CLDO4) powered
+ * in sleep anyway, so advertise keep-power-in-suspend; without it every
+ * s2idle entry aborts ("Some devices failed to suspend") and the board never
+ * suspends.  See docs/power.md.
+ */
+&mmc1 {
+	keep-power-in-suspend;
+};
+
+/*
+ * Wake source for s2idle (see docs/power.md).  The AXP717 PWRON pin is the
+ * board's power button.  Its PEK driver arms its own IRQ, but the PMIC's IRQ
+ * line is the one that actually reaches the SoC (via the NMI controller), so
+ * declare the PMIC itself wakeup-source: i2c-core then calls
+ * dev_pm_set_wake_irq() on the PMIC IRQ and the PM core arms it across system
+ * sleep.  The gpio-keys controller/MODE/volume buttons are deliberately left
+ * non-wakeup: only the power button should wake the board from s2idle.
+ */
+&axp717 {
+	wakeup-source;
+};

@@ -40,6 +40,20 @@
 #include "sun8i_tcon_top.h"
 #include "sunxi_engine.h"
 
+/* PM state, kept out of the exported struct sun4i_tcon. */
+struct sun4i_tcon_pm {
+	struct sun4i_tcon tcon;
+	int irq;
+	bool system_pm;
+	bool clocks_enabled;
+	bool clocks_suspended;
+};
+
+static struct sun4i_tcon_pm *sun4i_tcon_pm(struct sun4i_tcon *tcon)
+{
+	return container_of(tcon, struct sun4i_tcon_pm, tcon);
+}
+
 static struct drm_connector *sun4i_tcon_get_connector(const struct drm_encoder *encoder)
 {
 	struct drm_connector *connector;
@@ -783,17 +797,74 @@ static irqreturn_t sun4i_tcon_handler(int irq, void *private)
 	return IRQ_HANDLED;
 }
 
+static void sun4i_tcon_disable_clocks(void *data)
+{
+	struct sun4i_tcon *tcon = data;
+
+	if (!sun4i_tcon_pm(tcon)->clocks_enabled)
+		return;
+	if (tcon->quirks->has_channel_0)
+		clk_disable_unprepare(tcon->sclk0);
+	clk_disable_unprepare(tcon->clk);
+	sun4i_tcon_pm(tcon)->clocks_enabled = false;
+}
+
+static int sun4i_tcon_enable_clocks(struct sun4i_tcon *tcon)
+{
+	int ret;
+
+	ret = clk_prepare_enable(tcon->clk);
+	if (ret)
+		return ret;
+	if (tcon->quirks->has_channel_0) {
+		ret = clk_prepare_enable(tcon->sclk0);
+		if (ret) {
+			clk_disable_unprepare(tcon->clk);
+			return ret;
+		}
+	}
+	sun4i_tcon_pm(tcon)->clocks_enabled = true;
+	return 0;
+}
+
+void sun4i_tcon_suspend(struct sun4i_tcon *tcon)
+{
+	if (!sun4i_tcon_pm(tcon)->system_pm || sun4i_tcon_pm(tcon)->clocks_suspended)
+		return;
+
+	/* Drain handlers before either TCON or its associated mixer loses clocks. */
+	disable_irq(sun4i_tcon_pm(tcon)->irq);
+	sun4i_tcon_disable_clocks(tcon);
+	sun4i_tcon_pm(tcon)->clocks_suspended = true;
+}
+
+int sun4i_tcon_resume(struct sun4i_tcon *tcon)
+{
+	int ret;
+
+	if (!sun4i_tcon_pm(tcon)->clocks_suspended)
+		return 0;
+	ret = sun4i_tcon_enable_clocks(tcon);
+	if (ret)
+		return ret;
+	sun4i_tcon_pm(tcon)->clocks_suspended = false;
+	enable_irq(sun4i_tcon_pm(tcon)->irq);
+	return 0;
+}
+
 static int sun4i_tcon_init_clocks(struct device *dev,
 				  struct sun4i_tcon *tcon)
 {
-	tcon->clk = devm_clk_get_enabled(dev, "ahb");
+	int ret;
+
+	tcon->clk = devm_clk_get(dev, "ahb");
 	if (IS_ERR(tcon->clk)) {
 		dev_err(dev, "Couldn't get the TCON bus clock\n");
 		return PTR_ERR(tcon->clk);
 	}
 
 	if (tcon->quirks->has_channel_0) {
-		tcon->sclk0 = devm_clk_get_enabled(dev, "tcon-ch0");
+		tcon->sclk0 = devm_clk_get(dev, "tcon-ch0");
 		if (IS_ERR(tcon->sclk0)) {
 			dev_err(dev, "Couldn't get the TCON channel 0 clock\n");
 			return PTR_ERR(tcon->sclk0);
@@ -808,7 +879,11 @@ static int sun4i_tcon_init_clocks(struct device *dev,
 		}
 	}
 
-	return 0;
+	ret = sun4i_tcon_enable_clocks(tcon);
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(dev, sun4i_tcon_disable_clocks, tcon);
 }
 
 static int sun4i_tcon_init_irq(struct device *dev,
@@ -828,6 +903,7 @@ static int sun4i_tcon_init_irq(struct device *dev,
 		return ret;
 	}
 
+	sun4i_tcon_pm(tcon)->irq = irq;
 	return 0;
 }
 
@@ -1117,6 +1193,7 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
 	struct sunxi_engine *engine;
 	struct device_node *remote;
 	struct sun4i_tcon *tcon;
+	struct sun4i_tcon_pm *pm;
 	struct reset_control *edp_rstc;
 	bool has_lvds_rst, has_lvds_alt, can_lvds;
 	int ret;
@@ -1127,9 +1204,12 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
 		return -EPROBE_DEFER;
 	}
 
-	tcon = devm_kzalloc_obj(dev, *tcon);
-	if (!tcon)
+	pm = devm_kzalloc_obj(dev, *pm);
+	if (!pm)
 		return -ENOMEM;
+	pm->system_pm = of_device_is_compatible(dev->of_node, "allwinner,sun50i-h616-tcon-lcd") ||
+			of_device_is_compatible(dev->of_node, "allwinner,sun50i-h616-tcon-tv");
+	tcon = &pm->tcon;
 	dev_set_drvdata(dev, tcon);
 	tcon->drm = drm;
 	tcon->dev = dev;
@@ -1286,6 +1366,11 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
 				   SUN4I_TCON1_CTL_SRC_SEL_MASK,
 				   tcon->id);
 	}
+
+	if (tcon->quirks->hdmi_pad)
+		regmap_update_bits(tcon->regs, SUN4I_TCON_GCTL_REG,
+				   SUN4I_TCON_GCTL_PAD_SEL,
+				   SUN4I_TCON_GCTL_PAD_SEL);
 
 	list_add_tail(&tcon->list, &drv->tcon_list);
 
@@ -1518,6 +1603,14 @@ static const struct sun4i_tcon_quirks sun8i_a83t_tv_quirks = {
 	.has_channel_1		= true,
 };
 
+static const struct sun4i_tcon_quirks sun8i_r40_lcd_quirks = {
+	.supports_lvds		= true,
+	.has_channel_0		= true,
+	.set_mux		= sun8i_r40_tcon_tv_set_mux,
+	.dclk_min_div		= 1,
+	.setup_lvds_phy		= sun6i_tcon_setup_lvds_phy,
+};
+
 static const struct sun4i_tcon_quirks sun8i_r40_tv_quirks = {
 	.has_channel_1		= true,
 	.polarity_in_ch0	= true,
@@ -1546,6 +1639,13 @@ static const struct sun4i_tcon_quirks sun20i_d1_lcd_quirks = {
 	.set_mux		= sun8i_r40_tcon_tv_set_mux,
 };
 
+static const struct sun4i_tcon_quirks sun50i_h616_tv_quirks = {
+	.has_channel_1		= true,
+	.polarity_in_ch0	= true,
+	.hdmi_pad		= true,
+	.set_mux		= sun8i_r40_tcon_tv_set_mux,
+};
+
 /* sun4i_drv uses this list to check if a device node is a TCON */
 const struct of_device_id sun4i_tcon_of_table[] = {
 	{ .compatible = "allwinner,sun4i-a10-tcon", .data = &sun4i_a10_quirks },
@@ -1559,12 +1659,14 @@ const struct of_device_id sun4i_tcon_of_table[] = {
 	{ .compatible = "allwinner,sun8i-a33-tcon", .data = &sun8i_a33_quirks },
 	{ .compatible = "allwinner,sun8i-a83t-tcon-lcd", .data = &sun8i_a83t_lcd_quirks },
 	{ .compatible = "allwinner,sun8i-a83t-tcon-tv", .data = &sun8i_a83t_tv_quirks },
+	{ .compatible = "allwinner,sun8i-r40-tcon-lcd", .data = &sun8i_r40_lcd_quirks },
 	{ .compatible = "allwinner,sun8i-r40-tcon-tv", .data = &sun8i_r40_tv_quirks },
 	{ .compatible = "allwinner,sun8i-v3s-tcon", .data = &sun8i_v3s_quirks },
 	{ .compatible = "allwinner,sun9i-a80-tcon-lcd", .data = &sun9i_a80_tcon_lcd_quirks },
 	{ .compatible = "allwinner,sun9i-a80-tcon-tv", .data = &sun9i_a80_tcon_tv_quirks },
 	{ .compatible = "allwinner,sun20i-d1-tcon-lcd", .data = &sun20i_d1_lcd_quirks },
 	{ .compatible = "allwinner,sun20i-d1-tcon-tv", .data = &sun8i_r40_tv_quirks },
+	{ .compatible = "allwinner,sun50i-h616-tcon-tv", .data = &sun50i_h616_tv_quirks },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sun4i_tcon_of_table);

@@ -144,6 +144,18 @@ struct sunxi_engine {
 	struct list_head		list;
 };
 
+/*
+ * Engines that gate their clocks across system suspend register these with
+ * the DRM master, which suspends them after the TCONs and resumes them
+ * first: a TCON IRQ handler may touch its engine.
+ */
+struct sunxi_engine_pm {
+	struct sunxi_engine *engine;
+	int (*suspend)(struct sunxi_engine *engine);
+	int (*resume)(struct sunxi_engine *engine);
+	struct list_head list;
+};
+
 /**
  * sunxi_engine_commit() - commit all changes of the engine
  * @engine:	pointer to the engine

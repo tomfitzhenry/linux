@@ -6,9 +6,11 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/reset.h>
 
 #include "ccu_common.h"
@@ -250,13 +252,97 @@ static const struct sunxi_ccu_desc sun50i_h616_de33_clk_desc = {
 	.num_resets	= ARRAY_SIZE(sun50i_h5_de2_resets),
 };
 
+/*
+ * Add a regmap for the DE33 plane driver to access plane
+ * mapping registers.
+ * Only these registers are allowed to be written, in order
+ * to prevent overriding clock and reset configuration.
+ */
+
+#define SUN50I_DE33_CHN2CORE_REG 0x24
+#define SUN50I_DE33_PORT02CHN_REG 0x28
+#define SUN50I_DE33_PORT12CHN_REG 0x2c
+static bool sun8i_de2_ccu_regmap_accessible_reg(struct device *dev,
+						unsigned int reg)
+{
+	switch (reg) {
+	case SUN50I_DE33_CHN2CORE_REG:
+	case SUN50I_DE33_PORT02CHN_REG:
+	case SUN50I_DE33_PORT12CHN_REG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static const struct regmap_config sun8i_de2_ccu_regmap_config = {
+	.reg_bits	= 32,
+	.val_bits	= 32,
+	.reg_stride	= 4,
+	.max_register	= 0xe0,
+
+	/* other devices have no business accessing other registers */
+	.readable_reg	= sun8i_de2_ccu_regmap_accessible_reg,
+	.writeable_reg	= sun8i_de2_ccu_regmap_accessible_reg,
+};
+
+struct sunxi_de2_clk_state {
+	struct clk *bus;
+	struct clk *mod;
+	bool system_pm;
+	bool suspended;
+};
+
+static int __maybe_unused sunxi_de2_clk_suspend_late(struct device *dev)
+{
+	struct sunxi_de2_clk_state *state = dev_get_drvdata(dev);
+
+	if (!state->system_pm || state->suspended)
+		return 0;
+
+	/* Normal DRM suspend has quiesced all consumers. Keep registers retained. */
+	clk_disable_unprepare(state->mod);
+	clk_disable_unprepare(state->bus);
+	state->suspended = true;
+	return 0;
+}
+
+static int __maybe_unused sunxi_de2_clk_resume_early(struct device *dev)
+{
+	struct sunxi_de2_clk_state *state = dev_get_drvdata(dev);
+	int ret;
+
+	if (!state->suspended)
+		return 0;
+	ret = clk_prepare_enable(state->bus);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(state->mod);
+	if (ret) {
+		clk_disable_unprepare(state->bus);
+		return ret;
+	}
+	state->suspended = false;
+	return 0;
+}
+
+static const struct dev_pm_ops sunxi_de2_clk_pm_ops = {
+	.suspend_late = pm_sleep_ptr(sunxi_de2_clk_suspend_late),
+	.resume_early = pm_sleep_ptr(sunxi_de2_clk_resume_early),
+};
+
 static int sunxi_de2_clk_probe(struct platform_device *pdev)
 {
 	struct clk *bus_clk, *mod_clk;
+	struct sunxi_de2_clk_state *state;
 	struct reset_control *rstc;
 	void __iomem *reg;
 	const struct sunxi_ccu_desc *ccu_desc;
 	int ret;
+
+	state = devm_kzalloc(&pdev->dev, sizeof(*state), GFP_KERNEL);
+	if (!state)
+		return -ENOMEM;
 
 	ccu_desc = of_device_get_match_data(&pdev->dev);
 	if (!ccu_desc)
@@ -303,14 +389,30 @@ static int sunxi_de2_clk_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * The DE33 requires these additional (unknown) registers set
+	 * The DE33 requires these additional plane mapping registers set
 	 * during initialisation.
 	 */
 	if (of_device_is_compatible(pdev->dev.of_node,
 				    "allwinner,sun50i-h616-de33-clk")) {
-		writel(0, reg + 0x24);
-		writel(0x0000a980, reg + 0x28);
+		struct regmap *regmap;
+
+		regmap = devm_regmap_init_mmio(&pdev->dev, reg,
+				       &sun8i_de2_ccu_regmap_config);
+		if (IS_ERR(regmap)) {
+			ret = PTR_ERR(regmap);
+			goto err_assert_reset;
+		}
+
+		ret = of_syscon_register_regmap(pdev->dev.of_node, regmap);
+		if (ret)
+			goto err_assert_reset;
 	}
+
+	state->bus = bus_clk;
+	state->mod = mod_clk;
+	state->system_pm = of_device_is_compatible(pdev->dev.of_node,
+						 "allwinner,sun50i-h616-de33-clk");
+	platform_set_drvdata(pdev, state);
 
 	ret = devm_sunxi_ccu_probe(&pdev->dev, reg, ccu_desc);
 	if (ret)
@@ -368,6 +470,7 @@ static struct platform_driver sunxi_de2_clk_driver = {
 	.probe	= sunxi_de2_clk_probe,
 	.driver	= {
 		.name	= "sunxi-de2-clks",
+		.pm	= pm_sleep_ptr(&sunxi_de2_clk_pm_ops),
 		.of_match_table	= sunxi_de2_clk_ids,
 	},
 };
