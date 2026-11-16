@@ -32,6 +32,8 @@ struct sun8i_tcon_top {
 	struct clk_hw_onecell_data	*clk_data;
 	void __iomem			*regs;
 	struct reset_control		*rst;
+	bool				system_pm;
+	bool				suspended;
 
 	unsigned int			tcon_map;
 

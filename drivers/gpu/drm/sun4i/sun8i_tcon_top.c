@@ -225,7 +225,10 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
 		goto err_assert_reset;
 	}
 
-	writel(0, regs + TCON_TOP_PORT_SEL_REG);
+	tcon_top->system_pm = of_device_is_compatible(dev->of_node,
+						     "allwinner,sun50i-h616-tcon-top");
+
+	writel(tcon_top->system_pm ? 0x20 : 0, regs + TCON_TOP_PORT_SEL_REG);
 	writel(0, regs + TCON_TOP_GATE_SRC_REG);
 
 	/*
@@ -292,8 +295,10 @@ static void sun8i_tcon_top_unbind(struct device *dev, struct device *master,
 		if (clk_data->hws[i])
 			clk_hw_unregister_gate(clk_data->hws[i]);
 
-	clk_disable_unprepare(tcon_top->bus);
+	if (!tcon_top->suspended)
+		clk_disable_unprepare(tcon_top->bus);
 	reset_control_assert(tcon_top->rst);
+	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_ops sun8i_tcon_top_ops = {
@@ -343,11 +348,43 @@ const struct of_device_id sun8i_tcon_top_of_table[] = {
 MODULE_DEVICE_TABLE(of, sun8i_tcon_top_of_table);
 EXPORT_SYMBOL(sun8i_tcon_top_of_table);
 
+static int __maybe_unused sun8i_tcon_top_suspend_late(struct device *dev)
+{
+	struct sun8i_tcon_top *top = dev_get_drvdata(dev);
+
+	if (!top || !top->system_pm || top->suspended)
+		return 0;
+
+	clk_disable_unprepare(top->bus);
+	top->suspended = true;
+	return 0;
+}
+
+static int __maybe_unused sun8i_tcon_top_resume_early(struct device *dev)
+{
+	struct sun8i_tcon_top *top = dev_get_drvdata(dev);
+	int ret;
+
+	if (!top || !top->suspended)
+		return 0;
+	ret = clk_prepare_enable(top->bus);
+	if (ret)
+		return ret;
+	top->suspended = false;
+	return 0;
+}
+
+static const struct dev_pm_ops sun8i_tcon_top_pm_ops = {
+	.suspend_late = pm_sleep_ptr(sun8i_tcon_top_suspend_late),
+	.resume_early = pm_sleep_ptr(sun8i_tcon_top_resume_early),
+};
+
 static struct platform_driver sun8i_tcon_top_platform_driver = {
 	.probe		= sun8i_tcon_top_probe,
 	.remove		= sun8i_tcon_top_remove,
 	.driver		= {
 		.name		= "sun8i-tcon-top",
+		.pm		= pm_sleep_ptr(&sun8i_tcon_top_pm_ops),
 		.of_match_table	= sun8i_tcon_top_of_table,
 	},
 };
