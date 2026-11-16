@@ -124,6 +124,19 @@ config SERIAL_EARLYCON_SSSTAR_UDP
 
 if SERIAL_EARLYCON_SSSTAR_UDP
 
+config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
+	bool "Keep the UDP console after real consoles register"
+	default y
+	help
+	  A boot console is normally unregistered as soon as a real console
+	  registers.  On the retail C212 v2 UART0 has no pads, so ttyS0 can
+	  still become the default console and would silently take the only
+	  readable console away.  With this option the sstar_udp console
+	  drops its CON_BOOT flag and stays registered next to ttyS0, i.e.
+	  the UDP stream keeps carrying the whole dmesg.  Set this to N once
+	  the real Ethernet driver owns the MAC (the console TX slot must not
+	  fight the driver); the M2 netconsole takes over there.
+
 config SERIAL_EARLYCON_SSSTAR_UDP_EMAC_BASE
 	hex "SigmaStar EMAC X32 register base address"
 	default 0x1f343c00

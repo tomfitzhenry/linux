@@ -459,6 +459,15 @@ static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 	if (slab_is_available())
 		sstar_udp_try_ioremap();
 
+	/*
+	 * Keep the console for the whole boot: the retail board's only real
+	 * console (ttyS0) has no pads, and a boot console would be
+	 * unregistered the moment it becomes the default console.  See
+	 * SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT.
+	 */
+	if (IS_ENABLED(CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT))
+		dev->con->flags &= ~CON_BOOT;
+
 	/* Mask MAC interrupts and re-enable only the transmitter. */
 	emac = sstar_udp_emac_va();
 	writel(0xffffffff, emac + SSTAR_EMAC_IDR);
