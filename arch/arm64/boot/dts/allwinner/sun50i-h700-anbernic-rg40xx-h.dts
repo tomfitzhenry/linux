@@ -118,3 +118,16 @@
 &mmc1 {
 	keep-power-in-suspend;
 };
+
+/*
+ * Wake source for s2idle (see docs/power.md).  The AXP717 PWRON pin is the
+ * board's power button.  Its PEK driver arms its own IRQ, but the PMIC's IRQ
+ * line is the one that actually reaches the SoC (via the NMI controller), so
+ * declare the PMIC itself wakeup-source: i2c-core then calls
+ * dev_pm_set_wake_irq() on the PMIC IRQ and the PM core arms it across system
+ * sleep.  The gpio-keys controller/MODE/volume buttons are deliberately left
+ * non-wakeup: only the power button should wake the board from s2idle.
+ */
+&axp717 {
+	wakeup-source;
+};
