@@ -284,11 +284,21 @@
 				/* 1.8v - unused */
 			};
 
+			/*
+			 * The Anbernic/Allwinner BSP keeps ALDO3 and ALDO4
+			 * ("avcc") always-on.  Mainline gives them no consumer,
+			 * so the regulator core disables them in its late
+			 * initcall, which on this board coincides with the MUSB
+			 * data path dying.  Match the BSP.
+			 */
 			reg_aldo3: aldo3 {
-				/* 1.8v - unused */
+				regulator-always-on;
+				regulator-boot-on;
 			};
 
 			reg_aldo4: aldo4 {
+				regulator-always-on;
+				regulator-boot-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-name = "avcc";
