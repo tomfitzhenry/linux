@@ -530,4 +530,15 @@ config LOONGSON2_THERMAL
 	  is higher than the high temperature threshold or lower than the low
 	  temperature threshold, the interrupt will occur.
 
+config CV1800_THERMAL
+	tristate "Sophgo CV1800B/SG2000 thermal sensor"
+	depends on ARCH_SOPHGO || COMPILE_TEST
+	depends on THERMAL_OF
+	depends on COMMON_CLK
+	help
+	  Support for the temperature sensor integrated in the Sophgo
+	  CV1800B and SG2000 SoCs.  The sensor is exposed as a thermal
+	  zone; its high and low threshold interrupts are used to update
+	  the zone.
+
 endif
