@@ -91,7 +91,19 @@
 /*
  * The EMAC and its internal "Albany" PHY were brought up by U-Boot for the
  * TFTP boot; the kernel only has to take them over.
+ *
+ * The MAC address is pinned here because the probe-time RIU read of the
+ * EMAC's SA1 registers does not return what U-Boot programmed: on real
+ * silicon the upper half of SA1L comes back as a locally-administered
+ * value whose byte 2 varies per boot (observed 02:00:e6:00:12:02 then
+ * 02:00:6e:00:12:02), even though the installed U-Boot env and the vendor
+ * 4.9 kernel both use 02:00:00:c2:12:02.  Reading the MAC from the U-Boot
+ * env partition in SPI NOR (or the SoC efuse) is the proper fix and lands
+ * with the flash work in M3; until then this board file pins the owner's
+ * unit MAC so eth0 keeps a stable identity (and netconsole a stable
+ * source MAC).
  */
 &emac0 {
 	status = "okay";
+	local-mac-address = [02 00 00 c2 12 02];
 };
