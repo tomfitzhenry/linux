@@ -605,7 +605,7 @@ static void sunxi_musb_writew(void __iomem *addr, unsigned offset, u16 data)
 }
 
 static const struct musb_platform_ops sunxi_musb_ops = {
-	.quirks		= MUSB_INDEXED_EP,
+	.quirks		= MUSB_INDEXED_EP | MUSB_RECONNECT_ON_RESUME,
 	.init		= sunxi_musb_init,
 	.exit		= sunxi_musb_exit,
 	.enable		= sunxi_musb_enable,

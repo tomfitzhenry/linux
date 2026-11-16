@@ -464,6 +464,10 @@ static int sun4i_usb_phy_power_on(struct phy *_phy)
 	struct sun4i_usb_phy_data *data = to_sun4i_usb_phy_data(phy);
 	int ret;
 
+	/* phy0 power is controlled by sun4i_usb_phy0_reroute and id_det state */
+	if (phy->index == 0 && data->cfg->phy0_dual_route)
+		return 0;
+
 	if (!phy->vbus || phy->regulator_on)
 		return 0;
 
@@ -491,6 +495,10 @@ static int sun4i_usb_phy_power_off(struct phy *_phy)
 {
 	struct sun4i_usb_phy *phy = phy_get_drvdata(_phy);
 	struct sun4i_usb_phy_data *data = to_sun4i_usb_phy_data(phy);
+
+	/* phy0 power is controlled by sun4i_usb_phy0_reroute and id_det state */
+	if (phy->index == 0 && data->cfg->phy0_dual_route)
+		return 0;
 
 	if (!phy->vbus || !phy->regulator_on)
 		return 0;
@@ -535,6 +543,18 @@ static int sun4i_usb_phy_set_mode(struct phy *_phy,
 		return -EINVAL;
 	}
 
+	if (data->cfg->phy0_dual_route) {
+		/*
+		 For SoCs with dual route the PHY mode is fully determined by 
+		 the selected mux route (i.e. USB controller to use).
+		 As both host (EHCI/OHCI) and peripheral (MUSB) controllers uses
+		 the same PHY, both drivers can try to set PHY mode.
+		 We need to ignore this requests, but not report error in case
+		 of valid mode values.
+		*/
+		return 0;
+	}
+
 	if (new_mode != data->dr_mode) {
 		dev_info(&_phy->dev, "Changing dr_mode to %d\n", new_mode);
 		data->dr_mode = new_mode;
@@ -566,15 +586,34 @@ static const struct phy_ops sun4i_usb_phy_ops = {
 
 static void sun4i_usb_phy0_reroute(struct sun4i_usb_phy_data *data, int id_det)
 {
+	struct phy *phy0 = data->phys[0].phy;
+	struct sun4i_usb_phy *phy;
 	u32 regval;
 
+	if (!phy0)
+		return;
+
+	phy = phy_get_drvdata(phy0);
 	regval = readl(data->base + REG_PHY_OTGCTL);
 	if (id_det == 0) {
 		/* Host mode. Route phy0 to EHCI/OHCI */
 		regval &= ~OTGCTL_ROUTE_MUSB;
+
+		/* Enable VBUS reg */
+		if (phy->vbus && !phy->regulator_on) {
+			if (regulator_enable(phy->vbus))
+				dev_warn(phy->pmu, "Failed to enable vbus regulator\n");
+			phy->regulator_on = true;
+		}
 	} else {
 		/* Peripheral mode. Route phy0 to MUSB */
 		regval |= OTGCTL_ROUTE_MUSB;
+		
+		/* Disable VBUS reg */
+		if (phy->vbus && phy->regulator_on) {
+			regulator_disable(phy->vbus);
+			phy->regulator_on = false;
+		}
 	}
 	writel(regval, data->base + REG_PHY_OTGCTL);
 }
@@ -600,6 +639,12 @@ static void sun4i_usb_phy0_id_vbus_det_scan(struct work_struct *work)
 	if (!data->phy0_init) {
 		mutex_unlock(&phy0->mutex);
 		return;
+	}
+
+	/* Disable internal VBUS reg if there is an external VBUS */
+	if (vbus_det != 0 && phy->vbus && phy->regulator_on) {
+		regulator_disable(phy->vbus);
+		phy->regulator_on = false;
 	}
 
 	force_session_end = data->force_session_end;

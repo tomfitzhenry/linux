@@ -2798,6 +2798,28 @@ static void musb_restore_context(struct musb *musb)
 	musb_writeb(musb_base, MUSB_INDEX, musb->context.index);
 }
 
+/*
+ * A host that kept its enumeration across system sleep can come back with a
+ * stale view of this peripheral: the device is still listed and the interface
+ * up, but no bulk traffic flows until the host re-enumerates.  Some glue
+ * layers (sunxi) hit this after a long suspend.  Drop the D+ pull-up for long
+ * enough for the gadget work to latch the disconnect, then re-raise it, so the
+ * host sees a disconnect/reconnect and enumerates the gadget from scratch --
+ * the same effect as a cable replug or a configfs UDC rebind.
+ */
+static void musb_peripheral_reconnect(struct musb *musb)
+{
+	if (!musb->gadget_driver || !is_peripheral_active(musb))
+		return;
+
+	dev_info(musb->controller, "forcing a USB re-enumeration after resume\n");
+
+	usb_gadget_disconnect(&musb->g);
+	/* let musb->gadget_work run and actually clear MUSB_POWER_SOFTCONN */
+	msleep(200);
+	usb_gadget_connect(&musb->g);
+}
+
 static int musb_suspend(struct device *dev)
 {
 	struct musb	*musb = dev_to_musb(dev);
@@ -2884,6 +2906,9 @@ static int musb_resume(struct device *dev)
 	spin_unlock_irqrestore(&musb->lock, flags);
 
 	pm_runtime_put_autosuspend(dev);
+
+	if (musb->ops->quirks & MUSB_RECONNECT_ON_RESUME)
+		musb_peripheral_reconnect(musb);
 
 	return 0;
 }
