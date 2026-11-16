@@ -666,6 +666,14 @@ static int do_mmux_determine_rate(struct clk_rate_request *req, int id, void *da
 		id = mmux_get_parent_id(mmux);
 	}
 
+	/*
+	 * Do not offer parents that are reserved for other blocks as rate
+	 * parents; the round callback returning an error makes the caller try
+	 * the next parent.
+	 */
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(id)))
+		return -EOPNOTSUPP;
+
 	div_id = mmux->parent2sel[id];
 
 	if (div_id < 0) {
@@ -687,20 +695,245 @@ static int mmux_determine_rate(struct clk_hw *hw,
 					 do_mmux_determine_rate, mmux);
 }
 
+/*
+ * The CV1800/SG2000 MMUX clocks have two source groups, each with its own
+ * source select and divider (div_clk_<name>_0/1); clk_sel selects the group
+ * that clocks the IP.  A divider can only be written glitch-free while its
+ * group is not selected, so a rate change has to be made through the other
+ * group: this is the two-step CPU clock switch from the SoC TRM
+ * (SG2000 v1.0, section 8.5.1).
+ */
+#define MMUX_DIV_FROM_REG	BIT(3)
+#define MMUX_STAGING_RATE_HZ	500000000UL
+
+static u8 mmux_get_group(struct cv1800_clk_mmux *mmux)
+{
+	/* clk_sel = 1 selects div_clk_*_0 (group 0), 0 selects _1 (group 1). */
+	return cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel) ? 0 : 1;
+}
+
+static void mmux_select_group(struct cv1800_clk_mmux *mmux, u8 group)
+{
+	unsigned long flags;
+	u32 reg;
+
+	spin_lock_irqsave(mmux->common.lock, flags);
+
+	reg = readl(mmux->common.base + mmux->clk_sel.reg);
+	if (group == 0)
+		reg |= BIT(mmux->clk_sel.shift);
+	else
+		reg &= ~BIT(mmux->clk_sel.shift);
+	writel(reg, mmux->common.base + mmux->clk_sel.reg);
+
+	spin_unlock_irqrestore(mmux->common.lock, flags);
+}
+
+static u32 mmux_get_mux(struct cv1800_clk_mmux *mmux, u8 group)
+{
+	struct cv1800_clk_regfield *mux = &mmux->mux[group];
+
+	return cv1800_clk_regfield_get(readl(mmux->common.base + mux->reg), mux);
+}
+
+/*
+ * Return the hardware source-select value for CCF parent @index in @group,
+ * or a negative error value if that parent is not wired to @group.
+ */
+static int mmux_get_mux_value(struct cv1800_clk_mmux *mmux, u8 group, u8 index)
+{
+	const u8 *sel2parent = mmux->sel2parent[group];
+	unsigned int i, n = BIT(mmux->mux[group].width);
+
+	for (i = 0; i < n; i++)
+		if (sel2parent[i] == index)
+			return i;
+
+	return -EINVAL;
+}
+
+/* Program an unselected source group: source select, divider and bit[3]. */
+static void mmux_program_group(struct cv1800_clk_mmux *mmux, u8 group,
+			       u8 mux_val, unsigned int div)
+{
+	struct cv1800_clk_regfield *d = &mmux->div[group];
+	unsigned long flags;
+	u32 reg;
+
+	spin_lock_irqsave(mmux->common.lock, flags);
+
+	reg = readl(mmux->common.base + d->reg);
+	reg = cv1800_clk_regfield_set(reg, mux_val, &mmux->mux[group]);
+	reg = cv1800_clk_regfield_set(reg, div, d);
+	/*
+	 * TRM step 3: take the divider factor from this register.  Bit 0
+	 * (divider reset control) is preserved by the read-modify-write.
+	 */
+	reg |= MMUX_DIV_FROM_REG;
+	writel(reg, mmux->common.base + d->reg);
+
+	spin_unlock_irqrestore(mmux->common.lock, flags);
+}
+
+/*
+ * Pick the parent to use while a group is only used as the staging source.
+ * Prefer a parent that is allowed for rate changes, i.e. a CPU-safe PLL.
+ */
+static int mmux_get_staging_parent(struct cv1800_clk_mmux *mmux,
+				   struct clk_hw *hw, u8 group)
+{
+	unsigned int i, n = clk_hw_get_num_parents(hw);
+
+	if (mmux->rate_parent_mask) {
+		for (i = 0; i < n; i++)
+			if (mmux->parent2sel[i] == group &&
+			    (mmux->rate_parent_mask & BIT(i)))
+				return i;
+	}
+
+	return mmux->sel2parent[group][mmux_get_mux(mmux, group)];
+}
+
+/* Program an unselected group to a safe intermediate rate. */
+static int mmux_stage_group(struct cv1800_clk_mmux *mmux, struct clk_hw *hw,
+			    u8 group, unsigned long target_rate)
+{
+	struct cv1800_clk_regfield *d = &mmux->div[group];
+	struct clk_hw *parent;
+	unsigned long parent_rate;
+	int index, mux_val, div;
+
+	index = mmux_get_staging_parent(mmux, hw, group);
+	if (index < 0)
+		return index;
+
+	parent = clk_hw_get_parent_by_index(hw, index);
+	if (!parent)
+		return -EINVAL;
+
+	parent_rate = clk_hw_get_rate(parent);
+	if (!parent_rate)
+		return -EINVAL;
+
+	mux_val = mmux_get_mux_value(mmux, group, index);
+	if (mux_val < 0)
+		return mux_val;
+
+	div = divider_get_val(min_t(unsigned long, target_rate,
+				    MMUX_STAGING_RATE_HZ),
+			      parent_rate, NULL, d->width, d->flags);
+	if (div < 0)
+		return div;
+
+	mmux_program_group(mmux, group, mux_val, div);
+
+	return 0;
+}
+
+/*
+ * Switch @hw to CCF parent @index at @rate.  The target group is never
+ * written while it is selected.
+ */
+static int mmux_transition(struct clk_hw *hw, u8 index, unsigned long rate,
+			   unsigned long parent_rate)
+{
+	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
+	struct cv1800_clk_regfield *d;
+	s8 group = mmux->parent2sel[index];
+	int mux_val, div, ret;
+
+	if (group < 0)
+		return -EINVAL;
+
+	mux_val = mmux_get_mux_value(mmux, group, index);
+	if (mux_val < 0)
+		return mux_val;
+
+	d = &mmux->div[group];
+	div = divider_get_val(rate, parent_rate, NULL, d->width, d->flags);
+	if (div < 0)
+		return div;
+
+	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass)) {
+		/*
+		 * The bypass input is selected, so both source groups are
+		 * unselected: program the target group, select it, and only
+		 * then leave bypass mode (never run from an unprogrammed one).
+		 */
+		mmux_program_group(mmux, group, mux_val, div);
+		mmux_select_group(mmux, group);
+		cv1800_clk_clearbit(&mmux->common, &mmux->bypass);
+
+		return 0;
+	}
+
+	if (group == mmux_get_group(mmux)) {
+		/* The target group is live: stage through the other one. */
+		ret = mmux_stage_group(mmux, hw, !group, rate);
+		if (ret)
+			return ret;
+
+		mmux_select_group(mmux, !group);
+	}
+
+	mmux_program_group(mmux, group, mux_val, div);
+	mmux_select_group(mmux, group);
+
+	return 0;
+}
+
+static u8 mmux_get_parent(struct clk_hw *hw)
+{
+	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
+	u8 group;
+
+	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
+		return 0;
+
+	group = mmux_get_group(mmux);
+
+	return mmux->sel2parent[group][mmux_get_mux(mmux, group)];
+}
+
+/* Decode the rate of the selected source group; the caller holds no locks. */
+static unsigned long mmux_get_hw_rate(struct clk_hw *hw)
+{
+	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
+	struct cv1800_clk_regfield *div;
+	struct clk_hw *parent;
+	unsigned long val;
+	u8 group;
+	int index;
+
+	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass)) {
+		parent = clk_hw_get_parent_by_index(hw, 0);
+
+		return parent ? clk_hw_get_rate(parent) : 0;
+	}
+
+	group = mmux_get_group(mmux);
+	div = &mmux->div[group];
+	val = div_helper_get_clockdiv(&mmux->common, div);
+	index = mmux->sel2parent[group][mmux_get_mux(mmux, group)];
+	parent = clk_hw_get_parent_by_index(hw, index);
+	if (!parent)
+		return 0;
+
+	return divider_recalc_rate(hw, clk_hw_get_rate(parent), val, NULL,
+				   div->flags, div->width);
+}
+
 static unsigned long mmux_recalc_rate(struct clk_hw *hw,
 				      unsigned long parent_rate)
 {
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
-	unsigned long val;
 	struct cv1800_clk_regfield *div;
+	unsigned long val;
 
 	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
 		return parent_rate;
 
-	if (cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel))
-		div = &mmux->div[0];
-	else
-		div = &mmux->div[1];
+	div = &mmux->div[mmux_get_group(mmux)];
 
 	val = div_helper_get_clockdiv(&mmux->common, div);
 	if (val == 0)
@@ -714,76 +947,57 @@ static int mmux_set_rate(struct clk_hw *hw, unsigned long rate,
 			 unsigned long parent_rate)
 {
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
-	struct cv1800_clk_regfield *div;
-	unsigned long val;
 
+	/* The bypass input is the fixed oscillator; it cannot be divided. */
 	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
-		return parent_rate;
+		return -EBUSY;
 
-	if (cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel))
-		div = &mmux->div[0];
-	else
-		div = &mmux->div[1];
-
-	val = divider_get_val(rate, parent_rate, NULL,
-			      div->width, div->flags);
-
-	return div_helper_set_rate(&mmux->common, div, val);
+	return mmux_transition(hw, mmux_get_parent(hw), rate, parent_rate);
 }
 
-static u8 mmux_get_parent(struct clk_hw *hw)
+static int mmux_set_rate_and_parent(struct clk_hw *hw, unsigned long rate,
+				    unsigned long parent_rate, u8 index)
 {
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
-	struct cv1800_clk_regfield *mux;
-	u32 reg;
-	s8 clk_sel;
 
-	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
-		return 0;
+	if (index == 0 || mmux->parent2sel[index] < 0)
+		return -EINVAL;
 
-	if (cv1800_clk_checkbit(&mmux->common, &mmux->clk_sel))
-		clk_sel = 0;
-	else
-		clk_sel = 1;
-	mux = &mmux->mux[clk_sel];
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(index)))
+		return -EINVAL;
 
-	reg = readl(mmux->common.base + mux->reg);
-
-	return mmux->sel2parent[clk_sel][cv1800_clk_regfield_get(reg, mux)];
+	return mmux_transition(hw, index, rate, parent_rate);
 }
 
 static int mmux_set_parent(struct clk_hw *hw, u8 index)
 {
 	struct cv1800_clk_mmux *mmux = hw_to_cv1800_clk_mmux(hw);
-	struct cv1800_clk_regfield *mux;
-	unsigned long flags;
-	u32 reg;
-	s8 clk_sel = mmux->parent2sel[index];
+	unsigned long rate, parent_rate;
+	struct clk_hw *parent;
 
-	if (index == 0 || clk_sel == -1) {
+	if (index == 0 || mmux->parent2sel[index] < 0) {
 		cv1800_clk_setbit(&mmux->common, &mmux->bypass);
-		goto release;
+
+		return 0;
 	}
 
-	cv1800_clk_clearbit(&mmux->common, &mmux->bypass);
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(index)))
+		return -EINVAL;
 
-	if (clk_sel)
-		cv1800_clk_clearbit(&mmux->common, &mmux->clk_sel);
+	parent = clk_hw_get_parent_by_index(hw, index);
+	if (!parent)
+		return -EINVAL;
+
+	parent_rate = clk_hw_get_rate(parent);
+	if (!parent_rate)
+		return -EINVAL;
+
+	if (cv1800_clk_checkbit(&mmux->common, &mmux->bypass))
+		rate = min_t(unsigned long, parent_rate, MMUX_STAGING_RATE_HZ);
 	else
-		cv1800_clk_setbit(&mmux->common, &mmux->clk_sel);
+		rate = mmux_get_hw_rate(hw);
 
-	spin_lock_irqsave(mmux->common.lock, flags);
-
-	mux = &mmux->mux[clk_sel];
-	reg = readl(mmux->common.base + mux->reg);
-	reg = cv1800_clk_regfield_set(reg, index, mux);
-
-	writel(reg, mmux->common.base + mux->reg);
-
-	spin_unlock_irqrestore(mmux->common.lock, flags);
-
-release:
-	return 0;
+	return mmux_transition(hw, index, rate, parent_rate);
 }
 
 const struct clk_ops cv1800_clk_mmux_ops = {
@@ -794,6 +1008,7 @@ const struct clk_ops cv1800_clk_mmux_ops = {
 	.determine_rate = mmux_determine_rate,
 	.recalc_rate = mmux_recalc_rate,
 	.set_rate = mmux_set_rate,
+	.set_rate_and_parent = mmux_set_rate_and_parent,
 
 	.set_parent = mmux_set_parent,
 	.get_parent = mmux_get_parent,
