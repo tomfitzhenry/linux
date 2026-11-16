@@ -1,0 +1,187 @@
+# Declarative manifest for git-loom kernel branch integration.
+#
+# All active feature branches woven into the `lab/integration` branch are
+# listed below in weave order. Upstreamable branches (`upstream = true`) must
+# contain only linear commits with `Signed-off-by:` trailers and must not touch
+# CI/Nix/loom files.
+
+base = "v7.4-rc3"
+integration_branch = "lab/integration"
+upstream_url = "https://github.com/torvalds/linux.git"
+
+# ---------------------------------------------------------------------------
+# Pine64 Oz64 (Sophgo SG2000, arm64)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "soc/sg2000/clk-mmux"
+upstream = true
+subsystem = "clk: sophgo"
+board = "Pine64 Oz64 (SG2000)"
+description = "Glitch-free MMUX parent/bypass switching and A53 clock rate selection"
+
+[[branch]]
+name = "drv/sound/cv1800b-dapm"
+upstream = true
+subsystem = "ASoC: sophgo"
+board = "Pine64 Oz64 (SG2000)"
+description = "CV1800B internal audio DAC and I2S/TDM DAPM widgets and routes"
+
+[[branch]]
+name = "drv/mmc/sophgo-sd-pwrsw"
+upstream = true
+subsystem = "mmc: sdhci-of-dwcmshc"
+board = "Pine64 Oz64 (SG2000)"
+description = "Enable TOP_SD_PWRSW_CTRL 3.3V slot power when vmmc-supply is absent"
+
+[[branch]]
+name = "soc/sg2000/thermal"
+upstream = true
+subsystem = "thermal: sophgo"
+board = "Pine64 Oz64 (SG2000)"
+description = "Sophgo CV1800B/SG2000 on-die thermal sensor DT binding and driver"
+
+[[branch]]
+name = "soc/sg2000/dvfs"
+stacked_on = "soc/sg2000/thermal"
+upstream = true
+subsystem = "arm64: dts: sophgo"
+board = "Pine64 Oz64 (SG2000)"
+description = "SG2000 die thermal zone and Cortex-A53 OPP table with passive cooling"
+
+[[branch]]
+name = "dts/oz64"
+stacked_on = "soc/sg2000/dvfs"
+upstream = true
+subsystem = "arm64: dts: sophgo"
+board = "Pine64 Oz64 (SG2000)"
+description = "Pine64 Oz64 board DT binding and device tree"
+
+[[branch]]
+name = "local-oz64-quirks"
+stacked_on = "dts/oz64"
+upstream = false
+subsystem = "local: oz64"
+board = "Pine64 Oz64 (SG2000)"
+description = "Lab-specific Oz64 quirks (1.5M UART baud, 26 MHz eMMC cap, RSTGEN reboot)"
+
+# ---------------------------------------------------------------------------
+# Anbernic RG40XX-H & RG35XX-2024 (Allwinner H700, arm64)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "drv/drm/sun4i-h616-de33"
+upstream = true
+subsystem = "drm/sun4i"
+board = "Anbernic RG40XX-H / RG35XX-2024 (H700)"
+description = "Allwinner H616/H700 DE33 display engine, TCON, HDMI PHY, PWM, pinctrl, and panel-mipi"
+
+[[branch]]
+name = "dts/h700-rg40xx-h"
+stacked_on = "drv/drm/sun4i-h616-de33"
+upstream = true
+subsystem = "arm64: dts: allwinner"
+board = "Anbernic RG40XX-H / RG35XX-2024 (H700)"
+description = "Anbernic RG40XX-H and RG35XX-2024 device trees, panels, AXP717 regulators, and suspend OPPs"
+
+[[branch]]
+name = "fix/sunxi/usb-musb"
+upstream = true
+subsystem = "phy: sun4i-usb / usb: musb"
+board = "Anbernic RG40XX-H / RG35XX-2024 (H700)"
+description = "Allwinner dual-route USB0 OTG mode switching and MUSB resume re-enumeration"
+
+[[branch]]
+name = "fix/sunxi/watchdog"
+upstream = true
+subsystem = "watchdog: sunxi_wdt"
+board = "Anbernic RG40XX-H / RG35XX-2024 (H700)"
+description = "Extend adopted boot watchdog timeout, disarm across system sleep, and reset on panic"
+
+[[branch]]
+name = "fix/input/adc-joystick-invert"
+upstream = true
+subsystem = "Input: adc-joystick"
+board = "Anbernic RG40XX-H / RG35XX-2024 (H700)"
+description = "Match inverted axis values by axis code rather than DT child index"
+
+# ---------------------------------------------------------------------------
+# Pine64 QuartzPro64 (Rockchip RK3588, arm64)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "dts/rk3588-quartzpro64"
+upstream = true
+subsystem = "arm64: dts: rockchip"
+board = "Pine64 QuartzPro64 (RK3588)"
+description = "Enable HDMI receiver and SPI NOR flash on Pine64 QuartzPro64"
+
+[[branch]]
+name = "drv/media/rk3588-vepu580"
+stacked_on = "dts/rk3588-quartzpro64"
+upstream = true
+subsystem = "media: rockchip: rkvenc"
+board = "Pine64 QuartzPro64 (RK3588)"
+description = "Rockchip RK3588 VEPU580 H.264/HEVC stateless V4L2 encoder driver"
+
+# ---------------------------------------------------------------------------
+# TP-Link Tapo C212 v2 (SigmaStar Infinity6B0 / SSC335, arm)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "soc/sigmastar/infinity6b0-c212"
+upstream = true
+subsystem = "ARM: mstar"
+board = "TP-Link Tapo C212 v2 (SSC335)"
+description = "SigmaStar Infinity6B0 (SSC335) SoC clocks, EMAC/PHY, earlycon, and Tapo C212 v2 board support"
+
+# ---------------------------------------------------------------------------
+# Dell OptiPlex 7070 Micro (aluminium dev host, x86_64)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "fix/hwmon/dell-smm-optiplex-7070"
+upstream = true
+subsystem = "hwmon: dell-smm"
+board = "Dell OptiPlex 7070 Micro (aluminium)"
+description = "Add Dell OptiPlex 7070 to DMI and fan-control whitelist tables"
+
+# ---------------------------------------------------------------------------
+# Pine64 PinePhone Pro (Rockchip RK3399, arm64)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "dts/rk3399-pinephone-pro-optee"
+upstream = true
+subsystem = "arm64: dts: rockchip"
+board = "Pine64 PinePhone Pro (RK3399)"
+description = "Add OP-TEE reserved-memory and linaro,optee-tz firmware nodes"
+
+# ---------------------------------------------------------------------------
+# Marvell Armada 370 / ReadyNAS 102 (mvebu PJ4B, arm)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "fix/cpuidle/mvebu-l2-resume"
+upstream = true
+subsystem = "cpuidle: mvebu"
+board = "NETGEAR ReadyNAS 102 (Armada 370)"
+description = "Re-enable Aurora L2 cache via outer_resume() after deep idle resume"
+
+[[branch]]
+name = "soc/mvebu/coherency"
+upstream = true
+subsystem = "ARM: mvebu"
+board = "NETGEAR ReadyNAS 102 (Armada 370)"
+description = "PJ4B UP write-allocate cache policy and single-core Armada 370 I/O coherency"
+
+# ---------------------------------------------------------------------------
+# CI & git-loom manifest (non-upstream)
+# ---------------------------------------------------------------------------
+
+[[branch]]
+name = "local-ci"
+upstream = false
+subsystem = "local: ci"
+board = "all"
+description = "Declarative git-loom manifest, Nix build/test flake, and GitHub Actions workflows"
