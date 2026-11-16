@@ -37,6 +37,10 @@ properties:
           - const: sophgo,sg2000
       - items:
           - enum:
+              - pine64,oz64
+          - const: sophgo,sg2000
+      - items:
+          - enum:
               - milkv,duo256m
           - const: sophgo,sg2002
       - items:
