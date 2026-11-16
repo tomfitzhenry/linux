@@ -74,6 +74,38 @@
 #define MACB_TBQPH		0x04C8
 #define MACB_RBQPH		0x04D4
 
+/*
+ * MStar/SigmaStar "JULIAN" extras (Infinity/Mercury family).  These live in
+ * the same 16-bit RIU window as the Cadence registers but above 0x100, so the
+ * doubled-offset RIU accessors address them as 2 * offset.
+ *
+ * Ported from linux-chenxing/mstar_v6_7_rebase drivers/net/ethernet/cadence/
+ * macb.h:
+ * https://github.com/linux-chenxing/linux/blob/mstar_v6_7_rebase/drivers/net/ethernet/cadence/macb.h
+ */
+#define MACB_MSC313_JULIAN_100	0x100
+#define MACB_MSC313_JULIAN_104	0x104
+#define MACB_MSC313_JULIAN_108	0x108
+#define MACB_MSC313_13A		0x13a	/* msc313 only: SW RX descriptor mode */
+
+/* JULIAN 0x104 bits */
+#define MACB_MSC313_J104_SW_DESC	BIT(0)	/* software RX descriptors */
+#define MACB_MSC313_J104_RX_DELAY_EN	BIT(7)	/* "RX delay" IRQ enable */
+
+/* JULIAN 0x108 bits */
+#define MACB_MSC313_J108_RX_DELAY	BIT(15)	/* RX delay IRQ pending */
+
+/*
+ * MStar EMAC1 bank (RIU byte 0x200 is JULIAN 0x100; the bank's 16-bit
+ * registers are 2 bytes apart).  The hardware TX queue word lives at RIU
+ * byte 0x248: low byte = queued frames, bit 15 = TX queue enable.  U-Boot's
+ * eth_halt() clears that enable, so the kernel must set it again or every
+ * TAR/TCR write is dropped (M1 hardware finding).  Accessed raw (32-bit
+ * readl/writel at regs + 0x248), exactly like sstar_udp does.
+ */
+#define MACB_MSC313_EMAC1_TXQ		0x248
+#define MACB_MSC313_EMAC1_TXQ_EN	BIT(15)
+
 /* GEM register offsets. */
 #define GEM_NCR			0x0000 /* Network Control */
 #define GEM_NCFGR		0x0004 /* Network Config */
@@ -785,6 +817,14 @@
 #define MACB_CAPS_USRIO_HAS_MII			BIT(26)
 #define MACB_CAPS_USRIO_HAS_REFCLK_SOURCE	BIT(27)
 #define MACB_CAPS_USRIO_HAS_TSUCLK_SOURCE	BIT(28)
+/*
+ * MStar/SigmaStar EMAC.  The controller is an AT91RM9200-style MACB seen
+ * through the MStar 16-bit RIU bus (every 32-bit register is two 16-bit
+ * halves at doubled offsets), with a 4-deep hardware TX FIFO instead of the
+ * AT91 two-slot TX queue.
+ */
+#define MACB_CAPS_MSTAR_RIU			BIT(29)
+#define MACB_CAPS_MSTAR_TXQ			BIT(30)
 
 /* LSO settings */
 #define MACB_LSO_UFO_ENABLE			0x01
@@ -1244,6 +1284,8 @@ struct macb_config {
 	unsigned int		max_tx_length;
 	int	jumbo_max_len;
 	const struct macb_usrio_config *usrio;
+	/* depth of the AT91RM9200-style software TX queue (0 = 2-slot default) */
+	unsigned int		rm9200_txq_len;
 };
 
 struct tsu_incr {
@@ -1382,8 +1424,15 @@ struct macb {
 
 	phy_interface_t		phy_interface;
 
-	/* AT91RM9200 transmit queue (1 on wire + 1 queued) */
-	struct macb_tx_skb	rm9200_txq[2];
+	/*
+	 * AT91RM9200-style software transmit queue: 1 on the wire + 1 queued
+	 * on AT91RM9200, 4 on the MStar EMAC (its hardware TX FIFO is 4 slots
+	 * deep and TSR reports how many have drained).
+	 */
+	unsigned int		rm9200_txq_len;
+	struct macb_tx_skb	*rm9200_txq;
+	unsigned int		rm9200_tx_tail;
+	unsigned int		rm9200_tx_len;
 	unsigned int		max_tx_length;
 
 	u64			ethtool_stats[GEM_STATS_LEN + QUEUE_STATS_LEN * MACB_MAX_QUEUES];
