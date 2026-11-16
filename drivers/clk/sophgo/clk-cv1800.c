@@ -943,6 +943,7 @@ static CV1800_MMUX(clk_c906_0, clk_c906_0_parents,
 		   REG_CLK_SEL_0, 23,
 		   clk_c906_parent2sel,
 		   clk_c906_sel2parent[0], clk_c906_sel2parent[1],
+		   0,
 		   CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
 static CV1800_MMUX(clk_c906_1, clk_c906_1_parents,
 		   REG_CLK_EN_4, 14,
@@ -954,6 +955,7 @@ static CV1800_MMUX(clk_c906_1, clk_c906_1_parents,
 		   REG_CLK_SEL_0, 24,
 		   clk_c906_parent2sel,
 		   clk_c906_sel2parent[0], clk_c906_sel2parent[1],
+		   0,
 		   CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
 
 /* A53 */
@@ -1008,6 +1010,11 @@ static const u8 clk_a53_sel2parent[2][4] = {
  * Clock for A53 cpu in the CV18XX/SG200X series.
  * For CV180X and CV181X series, this clock is not used, but can not
  * be set to bypass mode, or the SoC will hang.
+ *
+ * Only MPLL and FPLL may be used for rate changes: MPLL is the CPU PLL, FPLL
+ * is the fixed system PLL, and the remaining PLLs clock fixed-function blocks
+ * (TPLL: TPU, A0PLL: audio, MIPIMPLL: camera/video) whose rates must not leak
+ * into the CPU clock domain.
  */
 static CV1800_MMUX(clk_a53, clk_a53_parents,
 		   REG_CLK_EN_0, 0,
@@ -1019,6 +1026,7 @@ static CV1800_MMUX(clk_a53, clk_a53_parents,
 		   REG_CLK_SEL_0, 0,
 		   clk_a53_parent2sel,
 		   clk_a53_sel2parent[0], clk_a53_sel2parent[1],
+		   BIT(4) | BIT(5),
 		   CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
 
 static struct clk_hw_onecell_data cv1800_hw_clks = {

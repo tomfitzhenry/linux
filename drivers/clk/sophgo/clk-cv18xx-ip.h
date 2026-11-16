@@ -53,6 +53,8 @@ struct cv1800_clk_mmux {
 	struct cv1800_clk_regbit	clk_sel;
 	const s8			*parent2sel;
 	const u8			*sel2parent[2];
+	/* Bit i allows CCF parent i to be selected for rate changes; 0 = all. */
+	u8				rate_parent_mask;
 };
 
 struct cv1800_clk_audio {
@@ -195,7 +197,8 @@ struct cv1800_clk_audio {
 		    _mux1_reg, _mux1_shift, _mux1_width,		\
 		    _bypass_reg, _bypass_shift,				\
 		    _clk_sel_reg, _clk_sel_shift,			\
-		    _parent2sel, _sel2parent0, _sel2parent1, _flags)	\
+		    _parent2sel, _sel2parent0, _sel2parent1,		\
+		    _rate_parent_mask, _flags)				\
 	struct cv1800_clk_mmux _name = {				\
 		.common		= CV1800_CLK_COMMON(#_name, _parent,	\
 						    &cv1800_clk_mmux_ops,\
@@ -221,6 +224,7 @@ struct cv1800_clk_audio {
 						 _clk_sel_shift),	\
 		.parent2sel	= _parent2sel,				\
 		.sel2parent	= { _sel2parent0, _sel2parent1 },	\
+		.rate_parent_mask = _rate_parent_mask,			\
 	}
 
 #define CV1800_ACLK(_name, _parent,					\

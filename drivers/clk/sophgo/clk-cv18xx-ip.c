@@ -666,6 +666,14 @@ static int do_mmux_determine_rate(struct clk_rate_request *req, int id, void *da
 		id = mmux_get_parent_id(mmux);
 	}
 
+	/*
+	 * Do not offer parents that are reserved for other blocks as rate
+	 * parents; the round callback returning an error makes the caller try
+	 * the next parent.
+	 */
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(id)))
+		return -EOPNOTSUPP;
+
 	div_id = mmux->parent2sel[id];
 
 	if (div_id < 0) {
@@ -768,11 +776,21 @@ static void mmux_program_group(struct cv1800_clk_mmux *mmux, u8 group,
 }
 
 /*
- * Pick the parent to use while a group is only used as the staging source:
- * keep the source the group already has.
+ * Pick the parent to use while a group is only used as the staging source.
+ * Prefer a parent that is allowed for rate changes, i.e. a CPU-safe PLL.
  */
-static int mmux_get_staging_parent(struct cv1800_clk_mmux *mmux, u8 group)
+static int mmux_get_staging_parent(struct cv1800_clk_mmux *mmux,
+				   struct clk_hw *hw, u8 group)
 {
+	unsigned int i, n = clk_hw_get_num_parents(hw);
+
+	if (mmux->rate_parent_mask) {
+		for (i = 0; i < n; i++)
+			if (mmux->parent2sel[i] == group &&
+			    (mmux->rate_parent_mask & BIT(i)))
+				return i;
+	}
+
 	return mmux->sel2parent[group][mmux_get_mux(mmux, group)];
 }
 
@@ -785,7 +803,7 @@ static int mmux_stage_group(struct cv1800_clk_mmux *mmux, struct clk_hw *hw,
 	unsigned long parent_rate;
 	int index, mux_val, div;
 
-	index = mmux_get_staging_parent(mmux, group);
+	index = mmux_get_staging_parent(mmux, hw, group);
 	if (index < 0)
 		return index;
 
@@ -945,6 +963,9 @@ static int mmux_set_rate_and_parent(struct clk_hw *hw, unsigned long rate,
 	if (index == 0 || mmux->parent2sel[index] < 0)
 		return -EINVAL;
 
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(index)))
+		return -EINVAL;
+
 	return mmux_transition(hw, index, rate, parent_rate);
 }
 
@@ -959,6 +980,9 @@ static int mmux_set_parent(struct clk_hw *hw, u8 index)
 
 		return 0;
 	}
+
+	if (mmux->rate_parent_mask && !(mmux->rate_parent_mask & BIT(index)))
+		return -EINVAL;
 
 	parent = clk_hw_get_parent_by_index(hw, index);
 	if (!parent)
