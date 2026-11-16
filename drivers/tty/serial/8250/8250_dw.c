@@ -15,6 +15,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/dmaengine.h>
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/lockdep.h>
@@ -33,6 +34,7 @@
 #include "8250_dwlib.h"
 
 #define OCTEON_UART_USR	0x27 /* UART Status Register */
+#define MSC313_UART_USR	0x7 /* UART Status Register on MSC313 */
 
 #define RZN1_UART_TDMACR 0x10c /* DMA Control Register Transmit Mode */
 #define RZN1_UART_RDMACR 0x110 /* DMA Control Register Receive Mode */
@@ -53,6 +55,7 @@
 #define DW_UART_QUIRK_CPR_VALUE		BIT(5)
 #define DW_UART_QUIRK_IER_KICK		BIT(6)
 #define DW_UART_QUIRK_SKIP_EMPTY_FIFO_READ	BIT(7)
+#define DW_UART_QUIRK_IS_MSTAR_MSC313	BIT(8)
 
 /*
  * Number of consecutive IIR_NO_INT interrupts required to trigger interrupt
@@ -79,6 +82,9 @@ struct dw8250_data {
 	unsigned int		skip_autocfg:1;
 	unsigned int		uart_16550_compatible:1;
 	unsigned int		in_idle:1;
+
+	/* Nesting depth of the MStar MSC313 DMA pause wrappers. */
+	unsigned int		msc313_dma_paused;
 
 	u8			no_int_count;
 };
@@ -314,6 +320,66 @@ static u32 dw8250_serial_in(struct uart_port *p, unsigned int offset)
 	u32 value = readb(p->membase + (offset << p->regshift));
 
 	return dw8250_modify_msr(p, offset, value);
+}
+
+/*
+ * On the MStar MSC313 family, touching the UART registers while a DMA
+ * transfer is running locks up the bus. Every register access has to be
+ * wrapped in a DMA pause/resume pair.
+ *
+ * dw8250_serial_out() itself performs register reads (and may recurse into
+ * dw8250_serial_in()) so a plain pause/resume pair around the outer access is
+ * not enough: track nesting and only resume the channels once the outermost
+ * wrapped access is done.
+ */
+static void msc313_pause_dma(struct uart_port *p)
+{
+	struct dw8250_data *d = to_dw8250_data(p->private_data);
+	struct uart_8250_port *up = up_to_u8250p(p);
+
+	if (!up->dma || d->msc313_dma_paused++)
+		return;
+
+	if (up->dma->rxchan)
+		dmaengine_pause(up->dma->rxchan);
+	if (up->dma->txchan)
+		dmaengine_pause(up->dma->txchan);
+}
+
+static void msc313_resume_dma(struct uart_port *p)
+{
+	struct dw8250_data *d = to_dw8250_data(p->private_data);
+	struct uart_8250_port *up = up_to_u8250p(p);
+
+	if (!up->dma)
+		return;
+
+	if (--d->msc313_dma_paused)
+		return;
+
+	if (up->dma->rxchan)
+		dmaengine_resume(up->dma->rxchan);
+	if (up->dma->txchan)
+		dmaengine_resume(up->dma->txchan);
+}
+
+static u32 dw8250_serial_inmsc313(struct uart_port *p, unsigned int offset)
+{
+	u32 value;
+
+	msc313_pause_dma(p);
+	value = dw8250_serial_in(p, offset);
+	msc313_resume_dma(p);
+
+	return value;
+}
+
+static void dw8250_serial_outmsc313(struct uart_port *p, unsigned int offset,
+				    u32 value)
+{
+	msc313_pause_dma(p);
+	dw8250_serial_out(p, offset, value);
+	msc313_resume_dma(p);
 }
 
 #ifdef CONFIG_64BIT
@@ -615,6 +681,21 @@ static void dw8250_quirks(struct uart_port *p, struct dw8250_data *data)
 		p->serial_in = dw8250_serial_in32;
 		data->uart_16550_compatible = true;
 	}
+	if (quirks & DW_UART_QUIRK_IS_MSTAR_MSC313) {
+		/*
+		 * dw8250_setup_port() would read registers at the wrong
+		 * place, even if we had them, so don't let it set up the
+		 * port. The MStar UART is a 16550 with an 8-byte register
+		 * stride and a DesignWare-style USR at byte 0x38, which
+		 * matches the reg-shift/usr_reg properties from DT.
+		 */
+		data->skip_autocfg = true;
+		p->fifosize = 32;
+
+		/* Touching the registers while DMA runs hangs the bus. */
+		p->serial_in = dw8250_serial_inmsc313;
+		p->serial_out = dw8250_serial_outmsc313;
+	}
 }
 
 static void dw8250_reset_control_assert(void *data)
@@ -628,6 +709,7 @@ static void dw8250_shutdown(struct uart_port *port)
 
 	serial8250_do_shutdown(port);
 	d->no_int_count = 0;
+	d->msc313_dma_paused = 0;
 }
 
 static int dw8250_probe(struct platform_device *pdev)
@@ -902,6 +984,11 @@ static const struct dw8250_platform_data dw8250_tda54 = {
 	.quirks = DW_UART_QUIRK_SKIP_EMPTY_FIFO_READ,
 };
 
+static const struct dw8250_platform_data dw8250_mstar_msc313_data = {
+	.usr_reg = MSC313_UART_USR,
+	.quirks = DW_UART_QUIRK_IS_MSTAR_MSC313,
+};
+
 static const struct of_device_id dw8250_of_match[] = {
 	{ .compatible = "snps,dw-apb-uart", .data = &dw8250_dw_apb },
 	{ .compatible = "cavium,octeon-3860-uart", .data = &dw8250_octeon_3860_data },
@@ -909,6 +996,7 @@ static const struct of_device_id dw8250_of_match[] = {
 	{ .compatible = "renesas,rzn1-uart", .data = &dw8250_renesas_rzn1_data },
 	{ .compatible = "sophgo,sg2044-uart", .data = &dw8250_skip_set_rate_data },
 	{ .compatible = "starfive,jh7100-uart", .data = &dw8250_skip_set_rate_data },
+	{ .compatible = "mstar,msc313-uart", .data = &dw8250_mstar_msc313_data },
 	{ .compatible = "ti,tda54-uart", .data = &dw8250_tda54 },
 	{ .compatible = "ultrarisc,dp1000-uart", .data = &dw8250_ultrarisc_dp1000_data },
 	{ /* Sentinel */ }
