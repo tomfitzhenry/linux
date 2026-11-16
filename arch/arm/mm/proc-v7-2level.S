@@ -45,6 +45,7 @@ SYM_TYPED_FUNC_START(cpu_v7_switch_mm)
 	mmid	r1, r1				@ get mm->context.id
 	ALT_SMP(orr	r0, r0, #TTB_FLAGS_SMP)
 	ALT_UP(orr	r0, r0, #TTB_FLAGS_UP)
+1:
 #ifdef CONFIG_PID_IN_CONTEXTIDR
 	mrc	p15, 0, r2, c13, c0, 1		@ read current context ID
 	lsr	r2, r2, #8			@ extract the PID
@@ -60,6 +61,19 @@ SYM_TYPED_FUNC_START(cpu_v7_switch_mm)
 #endif
 	bx	lr
 SYM_FUNC_END(cpu_v7_switch_mm)
+
+#ifdef CONFIG_CPU_PJ4B
+SYM_TYPED_FUNC_START(cpu_pj4b_switch_mm)
+#ifdef CONFIG_MMU
+	mmid	r1, r1				@ get mm->context.id
+	ALT_SMP(orr	r0, r0, #TTB_FLAGS_SMP)
+	ALT_UP(orr	r0, r0, #TTB_IRGN_WBWA | TTB_RGN_OC_WBWA)
+	b	1b
+#else
+	bx	lr
+#endif
+SYM_FUNC_END(cpu_pj4b_switch_mm)
+#endif
 
 /*
  *	cpu_v7_set_pte_ext(ptep, pte)
@@ -145,10 +159,11 @@ SYM_FUNC_END(cpu_v7_set_pte_ext)
 	 */
 	.macro	v7_ttb_setup, zero, ttbr0l, ttbr0h, ttbr1, tmp
 	mcr	p15, 0, \zero, c2, c0, 2	@ TTB control register
-	ALT_SMP(orr	\ttbr0l, \ttbr0l, #TTB_FLAGS_SMP)
-	ALT_UP(orr	\ttbr0l, \ttbr0l, #TTB_FLAGS_UP)
-	ALT_SMP(orr	\ttbr1, \ttbr1, #TTB_FLAGS_SMP)
-	ALT_UP(orr	\ttbr1, \ttbr1, #TTB_FLAGS_UP)
+	tst	\ttbr0l, #0x7f
+	ALT_SMP(orreq	\ttbr0l, \ttbr0l, #TTB_FLAGS_SMP)
+	ALT_UP(orreq	\ttbr0l, \ttbr0l, #TTB_FLAGS_UP)
+	ALT_SMP(orreq	\ttbr1, \ttbr1, #TTB_FLAGS_SMP)
+	ALT_UP(orreq	\ttbr1, \ttbr1, #TTB_FLAGS_UP)
 	mcr	p15, 0, \ttbr1, c2, c0, 1	@ load TTB1
 	.endm
 
