@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * Copyright (C) 2026 Tom Fitzhenry <tom@tom-fitzhenry.me.uk>
+ */
+
+#include "sun50i-h700-anbernic-rg35xx-h.dts"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Anbernic RG40XX H";
+	compatible = "anbernic,rg40xx-h", "allwinner,sun50i-h700";
+};
+
+/*
+ * The RG40XX-H reuses the RG35XX-H joystick mux wiring (PI1/PI2 select,
+ * PI0 enable), but its sticks are wired the other way round: the ROCKNIX
+ * RG40XX-H board DTS sets invert-absx/y/rx/ry, i.e. all four axes run
+ * inverted relative to the ADC's raw direction.  ABS_X and ABS_RY already
+ * inherit <4096 0> (inverted) from the RG35XX-H base, so only ABS_Y and
+ * ABS_RX need overriding here.
+ */
+&{/adc-joystick/axis@1} {
+	abs-range = <4096 0>;
+};
+
+&{/adc-joystick/axis@2} {
+	abs-range = <4096 0>;
+};
+
+/*
+ * On the RG40XX-H PI7 drives the RGB keyboard-backlight LED rather than
+ * the RG35XX-H's vcc5v0-usb enable, so retire that regulator before
+ * claiming the pin for the LED.  The usb1_vbus-supply has to go with it:
+ * devm_regulator_get_optional() on a disabled regulator node returns
+ * -EPROBE_DEFER forever, which wedges the whole H616 USB PHY probe and,
+ * with it, the MUSB gadget.  With no supply the PHY skips vbus and usb0
+ * still enumerates.
+ */
+&reg_vcc5v0_usb {
+	status = "disabled";
+};
+
+&usbphy {
+	/delete-property/ usb1_vbus-supply;
+};
+
+&leds {
+	led-rgb {
+		function = LED_FUNCTION_KBD_BACKLIGHT;
+		color = <LED_COLOR_ID_RGB>;
+		gpios = <&pio 8 7 GPIO_ACTIVE_HIGH>; /* PI7 */
+	};
+};
+
+&pio {
+	vcc-pd-supply = <&reg_cldo3>;
+
+	uart5_ph_pins: uart5-ph-pins {
+		pins = "PH2", "PH3";
+		function = "uart5";
+	};
+};
+
+/* Secondary UART exposed on the RG40XX-H test pads. */
+&uart5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_ph_pins>;
+	status = "okay";
+};
+
+&r_i2c {
+	pcf8563: rtc@51 {
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+		#clock-cells = <0>;
+	};
+};
+
+&{/aliases} {
+	serial1 = &uart5;
+	rtc0 = &pcf8563;
+	rtc1 = &rtc;
+	/* Keep the microSD as mmcblk0 (root= and NixOS expect it) even
+	 * though the now-working SDIO Wi-Fi host probes first. */
+	mmc0 = &mmc0;
+	mmc1 = &mmc1;
+};
