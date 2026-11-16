@@ -124,6 +124,16 @@ config SERIAL_EARLYCON_SSSTAR_UDP
 
 if SERIAL_EARLYCON_SSSTAR_UDP
 
+config SERIAL_EARLYCON_SSSTAR_UDP_DEBUG
+	bool "M1 hardware bring-up debug scaffolding"
+	default n
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	help
+	  MAC loopback self-test and EMAC/PHY register dump for bringing the
+	  blind console up on real silicon without a UART.  Off by default; the
+	  results are only useful together with the black box and the post-
+	  fallback devmem reads described in docs/mainline/report/M1.md.
+
 config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
 	bool "Keep the UDP console after real consoles register"
 	default y
@@ -139,7 +149,7 @@ config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
 
 config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
 	bool "Record EMAC/PHY state in a reserved DRAM page"
-	default y
+	default n
 	help
 	  Leave the MAC/PHY register state, frame counters and the last frame
 	  buffer words in a reserved DRAM page so a hardware boot without UART

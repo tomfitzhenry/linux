@@ -129,11 +129,8 @@
  * DRAM the IPL's MIU BIST does not wipe.  Cheap: a handful of word stores per
  * frame, disabled with SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX=n.
  */
-#ifdef CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
-#define SSTAR_BB_PHYS			CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX_PHYS
-#define SSTAR_BB_MAGIC			0x32313243U	/* "C212" LE */
-#define SSTAR_BB_WORDS			64
-
+/* Word layout of the black box page (compiled in either way: the writer is a
+ * no-op unless CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX is set). */
 enum sstar_udp_bb_word {
 	SSTAR_BB_MAGIC_W = 0,
 	SSTAR_BB_VERSION_W,
@@ -194,6 +191,11 @@ enum sstar_udp_bb_word {
 	SSTAR_BB_LOOP_RSR_W,
 	SSTAR_BB_LOOP_CTL_W,
 };
+
+#ifdef CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+#define SSTAR_BB_PHYS			CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX_PHYS
+#define SSTAR_BB_MAGIC			0x32313243U	/* "C212" LE */
+#define SSTAR_BB_WORDS			64
 
 static void __iomem *sstar_udp_bb;
 static u32 sstar_udp_bb_early[SSTAR_BB_WORDS];
@@ -408,11 +410,6 @@ static void __iomem *sstar_udp_phy_va(void)
 static u32 sstar_udp_emac_read(unsigned int off)
 {
 	return readl(sstar_udp_emac_va() + off);
-}
-
-static void sstar_udp_emac_write(unsigned int off, u32 val)
-{
-	writel(val, sstar_udp_emac_va() + off);
 }
 
 static void __iomem *sstar_udp_riu_va(void)
@@ -688,6 +685,56 @@ static int __init sstar_udp_parse_ipv4(const char *s, u8 ip[4])
  * reserved no-map in the DT, ioremap() refuses to map RAM and we keep the
  * fixmap path, which works forever.
  */
+/*
+ * Optional destination overrides on the command line, for environments where
+ * the boot host is not the address compiled into the defaults (e.g. a second
+ * LAN box capturing the console because the harness host's firewall drops the
+ * port).  The earlycon core passes the text after the address, so:
+ *
+ *   earlycon=sstar_udp,mmio,0x1f343c00,dip=172.17.1.181
+ *   earlycon=sstar_udp,mmio,0x1f343c00,dip=172.17.1.181,dport=6666,mac=02:00:00:c2:12:02
+ *
+ * Unknown tokens (e.g. a bare baud rate) are ignored.
+ */
+static int __init sstar_udp_parse_opts(const char *opts)
+{
+	char buf[160];
+	char *p, *tok;
+	u8 tmp[6];
+
+	strscpy(buf, opts, sizeof(buf));
+
+	for (p = buf; (tok = strsep(&p, ",")) != NULL;) {
+		if (!*tok)
+			continue;
+		if (!strncmp(tok, "dip=", 4)) {
+			if (sstar_udp_parse_ipv4(tok + 4, sstar_udp_cfg.dst_ip))
+				return -EINVAL;
+		} else if (!strncmp(tok, "sip=", 4)) {
+			if (sstar_udp_parse_ipv4(tok + 4, sstar_udp_cfg.src_ip))
+				return -EINVAL;
+		} else if (!strncmp(tok, "mac=", 4)) {
+			if (sstar_udp_parse_mac(tok + 4, tmp))
+				return -EINVAL;
+			memcpy(sstar_udp_cfg.src_mac, tmp, SSTAR_UDP_MAC_LEN);
+		} else if (!strncmp(tok, "dport=", 6)) {
+			u16 v;
+
+			if (kstrtou16(tok + 6, 10, &v))
+				return -EINVAL;
+			sstar_udp_cfg.dst_port = v;
+		} else if (!strncmp(tok, "sport=", 6)) {
+			u16 v;
+
+			if (kstrtou16(tok + 6, 10, &v))
+				return -EINVAL;
+			sstar_udp_cfg.src_port = v;
+		}
+	}
+
+	return 0;
+}
+
 static bool __init sstar_udp_try_ioremap(void)
 {
 	void __iomem *frame, *l3, *emac, *riu;
@@ -753,6 +800,12 @@ static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 	sstar_udp_cfg.src_port = CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_SRC_PORT;
 	sstar_udp_cfg.dst_port = CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_DST_PORT;
 
+	/* Optional "dip=", "sip=", "mac=", "dport=", "sport=" overrides. */
+	if (opt && strchr(opt, '=')) {
+		if (sstar_udp_parse_opts(opt))
+			return -EINVAL;
+	}
+
 	sstar_udp_emac_phys = base;
 	sstar_udp_emac_off = base & ~PAGE_MASK;
 
@@ -806,15 +859,6 @@ static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 			 readw(sstar_udp_riu_va() + 2 * 0x00));
 	sstar_udp_bb_put(SSTAR_BB_IDR_W, sstar_udp_riu_read_reg(0x2c));
 
-	sstar_udp_bb_put(SSTAR_BB_X32_JULIAN104_PRE_W,
-			 sstar_udp_emac_read(2 * 0x104));
-	sstar_udp_emac_write(2 * 0x104,
-			     sstar_udp_emac_read(2 * 0x104) |
-			     SSTAR_JULIAN_SW_DESC_ENABLE);
-	sstar_udp_bb_put(SSTAR_BB_X32_JULIAN104_POST_W,
-			 sstar_udp_emac_read(2 * 0x104));
-	sstar_udp_bb_put(SSTAR_BB_X32_XTSR_POST_W,
-			 sstar_udp_riu_read_reg(0x14));
 
 	/* The internal "Albany" PHY: register N is the 16-bit RIU word at +4N. */
 	sstar_udp_bb_put(SSTAR_BB_PHY_BMCR_W,
@@ -836,6 +880,8 @@ EARLYCON_DECLARE(sstar_udp, sstar_udp_setup);
  * and DMAs both ways" from "the frames leave the MAC but never reach the
  * wire/PHY", which is otherwise unobservable without a UART.
  */
+#ifdef CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_DEBUG
+
 #define SSTAR_RX_TEST_PHYS	CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_RXTEST_PHYS
 
 static void __init sstar_udp_loopback_test(void)
@@ -931,6 +977,13 @@ static void __init sstar_udp_reg_dump(void)
 
 	iounmap(out);
 }
+
+#else /* !CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_DEBUG */
+
+static void __init sstar_udp_loopback_test(void) { }
+static void __init sstar_udp_reg_dump(void) { }
+
+#endif /* CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_DEBUG */
 
 /* The mm is up once the early initcalls run: drop the fixmap remapping. */
 static int __init sstar_udp_remap(void)
