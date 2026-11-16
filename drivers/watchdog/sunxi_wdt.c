@@ -17,7 +17,10 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
+#include <linux/panic.h>
+#include <linux/panic_notifier.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <linux/stringify.h>
@@ -55,6 +58,7 @@ struct sunxi_wdt_dev {
 	struct watchdog_device wdt_dev;
 	void __iomem *wdt_base;
 	const struct sunxi_wdt_reg *wdt_regs;
+	struct notifier_block panic_nb;
 };
 
 /*
@@ -115,6 +119,87 @@ static int sunxi_wdt_restart(struct watchdog_device *wdt_dev,
 		val |= regs->wdt_key_val;
 		writel(val, wdt_base + regs->wdt_mode);
 	}
+	return 0;
+}
+
+/*
+ * A panic must reset this board even when panic_timeout is 0.  vpanic() only
+ * reaches emergency_restart() when panic_timeout != 0, and the TWD is
+ * otherwise deliberately disarmed for s2idle (patch 0020, plus the NixOS
+ * disarm-before-sleep hook), so a panic on the idle/suspend entry path used to
+ * leave the board hung with nobody left to feed the watchdog.  Arm the TWD to
+ * its shortest interval and reload it; the hardware then resets the SoC a
+ * fraction of a second later.  This runs from an atomic notifier in panic
+ * context: only readl()/writel() and printk(), no locks and no sleeping.  It
+ * models sunxi_wdt_restart() but returns instead of spinning, so it never
+ * blocks the panic path.
+ */
+static int sunxi_wdt_panic_notify(struct notifier_block *nb,
+				  unsigned long action, void *data)
+{
+	struct sunxi_wdt_dev *sunxi_wdt =
+		container_of(nb, struct sunxi_wdt_dev, panic_nb);
+	void __iomem *wdt_base = sunxi_wdt->wdt_base;
+	const struct sunxi_wdt_reg *regs = sunxi_wdt->wdt_regs;
+	u32 val;
+
+	/*
+	 * With panic_timeout > 0 vpanic() waits and then calls
+	 * emergency_restart() itself; arming the TWD here would reboot out from
+	 * under that path (and out from under any restart handler it runs), so
+	 * leave it alone.
+	 */
+	if (panic_timeout > 0)
+		return NOTIFY_DONE;
+
+	/* Route a TWD expiry to a full system reset, as sunxi_wdt_restart(). */
+	val = readl(wdt_base + regs->wdt_cfg);
+	val &= ~regs->wdt_reset_mask;
+	val |= regs->wdt_reset_val;
+	val |= regs->wdt_key_val;
+	writel(val, wdt_base + regs->wdt_cfg);
+
+	/* Shortest hardware interval (0.5 s), enabled, counter reloaded now. */
+	val = readl(wdt_base + regs->wdt_mode);
+	val &= ~(WDT_TIMEOUT_MASK << regs->wdt_timeout_shift);
+	val |= WDT_MODE_EN;
+	val |= regs->wdt_key_val;
+	writel(val, wdt_base + regs->wdt_mode);
+	writel(WDT_CTRL_RELOAD, wdt_base + regs->wdt_ctrl);
+
+	pr_emerg(DRV_NAME ": panic, forcing a reset via the TWD\n");
+
+	return NOTIFY_DONE;
+}
+
+static void sunxi_wdt_unregister_panic_notifier(void *data)
+{
+	struct sunxi_wdt_dev *sunxi_wdt = data;
+
+	atomic_notifier_chain_unregister(&panic_notifier_list,
+					 &sunxi_wdt->panic_nb);
+}
+
+static int sunxi_wdt_register_panic_notifier(struct device *dev,
+					     struct sunxi_wdt_dev *sunxi_wdt)
+{
+	int err;
+
+	sunxi_wdt->panic_nb.notifier_call = sunxi_wdt_panic_notify;
+	err = atomic_notifier_chain_register(&panic_notifier_list,
+					     &sunxi_wdt->panic_nb);
+	if (err)
+		return err;
+
+	/* devm_add_action_or_reset() runs this on both unbind and probe fail. */
+	err = devm_add_action_or_reset(dev, sunxi_wdt_unregister_panic_notifier,
+				       sunxi_wdt);
+	if (err)
+		return err;
+
+	dev_info(dev, "panic notifier registered (panic_timeout=%d)\n",
+		 panic_timeout);
+
 	return 0;
 }
 
@@ -319,21 +404,31 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	watchdog_set_restart_priority(&sunxi_wdt->wdt_dev, 128);
 
 	watchdog_set_drvdata(&sunxi_wdt->wdt_dev, sunxi_wdt);
+	platform_set_drvdata(pdev, sunxi_wdt);
 
+	/*
+	 * If the bootloader already armed the watchdog, adopt it instead of
+	 * disarming it.
+	 */
 	if (sunxi_wdt_is_running(&sunxi_wdt->wdt_dev)) {
 		running_timeout = sunxi_wdt_get_timeout(&sunxi_wdt->wdt_dev);
-		if (running_timeout)
-			sunxi_wdt->wdt_dev.timeout = running_timeout;
-
-		err = sunxi_wdt_start(&sunxi_wdt->wdt_dev);
-		if (err)
-			return err;
-
+		sunxi_wdt_set_timeout(&sunxi_wdt->wdt_dev, WDT_MAX_TIMEOUT);
+		sunxi_wdt->wdt_dev.max_hw_heartbeat_ms = WDT_MAX_TIMEOUT * 1000;
 		set_bit(WDOG_HW_RUNNING, &sunxi_wdt->wdt_dev.status);
+		dev_info(dev,
+			 "adopted boot watchdog (boot_timeout=%us timeout=%us hw_running=%d)\n",
+			 running_timeout, sunxi_wdt->wdt_dev.timeout,
+			 test_bit(WDOG_HW_RUNNING, &sunxi_wdt->wdt_dev.status));
+	} else {
+		sunxi_wdt_stop(&sunxi_wdt->wdt_dev);
 	}
 
 	watchdog_stop_on_reboot(&sunxi_wdt->wdt_dev);
 	err = devm_watchdog_register_device(dev, &sunxi_wdt->wdt_dev);
+	if (unlikely(err))
+		return err;
+
+	err = sunxi_wdt_register_panic_notifier(dev, sunxi_wdt);
 	if (unlikely(err))
 		return err;
 
@@ -343,11 +438,45 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The TWD keeps counting while the system is suspended (its maximum is 16 s
+ * on the H616/H700), but nobody can feed it once userspace is frozen and the
+ * watchdog core cancels its ping worker.  Disarm it across system sleep so a
+ * suspend longer than the timeout cannot reset the board, and re-arm it on
+ * resume.  This covers every suspend path, including a raw write to
+ * /sys/power/state (e.g. rtcwake), which never runs systemd's sleep hooks.
+ */
+static int __maybe_unused sunxi_wdt_suspend(struct device *dev)
+{
+	struct sunxi_wdt_dev *sunxi_wdt = dev_get_drvdata(dev);
+	struct watchdog_device *wdd = &sunxi_wdt->wdt_dev;
+
+	if (watchdog_active(wdd) || watchdog_hw_running(wdd))
+		sunxi_wdt_stop(wdd);
+
+	return 0;
+}
+
+static int __maybe_unused sunxi_wdt_resume(struct device *dev)
+{
+	struct sunxi_wdt_dev *sunxi_wdt = dev_get_drvdata(dev);
+	struct watchdog_device *wdd = &sunxi_wdt->wdt_dev;
+
+	if (watchdog_active(wdd) || watchdog_hw_running(wdd))
+		sunxi_wdt_start(wdd);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(sunxi_wdt_pm_ops, sunxi_wdt_suspend,
+				sunxi_wdt_resume);
+
 static struct platform_driver sunxi_wdt_driver = {
 	.probe		= sunxi_wdt_probe,
 	.driver		= {
 		.name		= DRV_NAME,
 		.of_match_table	= sunxi_wdt_dt_ids,
+		.pm		= pm_ptr(&sunxi_wdt_pm_ops),
 	},
 };
 
