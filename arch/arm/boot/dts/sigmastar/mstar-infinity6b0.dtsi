@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * SigmaStar Infinity6B0 (SSC335 / SSC333 / SSC337) SoC
+ *
+ * The Infinity6B0 die is an Armv7 Cortex-A7 with 64 MiB of integrated
+ * DDR2, a GIC-400, the MStar "main-intc" (64 IRQ + 32 FIQ lines), the
+ * PIU timers/watchdog bank and a 16550-with-USR UART, on the same
+ * backbone as the other Infinity/Mercury parts already described in
+ * mstar-v7.dtsi, so it starts from that file.
+ *
+ * Register and IRQ numbers are taken from the vendor 4.9 tree on the
+ * OpenIPC branch (openipc/sigmastar-infinity6b0:
+ * arch/arm/boot/dts/infinity6b0.dtsi and
+ * drivers/sstar/include/infinity6b0/irqs.h), whose GIC_SPI numbering for
+ * the main-intc group is 32 + (relative line), e.g. UART0 = SPI 66 =
+ * relative 34, EMAC = SPI 58 = relative 26, and the MS_FIQ group
+ * (timer/watchdog) starts at SPI 96 = relative 0 in intc_fiq.
+ *
+ * Board files (like mstar-infinity6b0-ssc335-tapo-c212-v2.dts) provide
+ * the memory node and the chosen/bootargs.
+ */
+
+#include "mstar-v7.dtsi"
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	pmu {
+		/* The Cortex-A7 PMU lines on this die are not the msc313 ones. */
+		status = "disabled";
+	};
+
+	soc: soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/*
+		 * SigmaStar DMA masters (EMAC, BDMA, FCIE, BACH, VIF, JPE,
+		 * VENC, ...) address DDR2 starting at bus address 0, while
+		 * the CPU sees it at 0x20000000; subtract that exactly once,
+		 * here, so every driver writes CPU physical addresses.
+		 */
+		dma-ranges = <0x0 0x20000000 0x04000000>;
+	};
+};
+
+/*
+ * The main-intc domain's MS_IRQ group is relative lines 0..63 (GIC SPI
+ * 32..95, mstar-v7.dtsi's intc_irq node); the MS_FIQ group is relative
+ * lines 0..31 (GIC SPI 96..127, intc_fiq).  Everything below uses the
+ * relative numbers its interrupt-parent domain expects.
+ */
+
+&imi {
+	/* 96 KiB of internal IMI SRAM, 0xa0000000..0xa0017fff. */
+	reg = <0xa0000000 0x18000>;
+};
+
+&riu {
+	/*
+	 * PIU timer 0 (byte 0x1F006040): the vendor kernel uses it as an
+	 * always-on clocksource/clockevent next to the Arm arch timer.
+	 * MS_FIQ line 0 = timer 0.
+	 */
+	timer@6040 {
+		compatible = "mstar,msc313e-timer";
+		reg = <0x6040 0x40>;
+		clocks = <&xtal_div2>;
+		interrupts-extended = <&intc_fiq GIC_SPI 0 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
+	/*
+	 * UART0 at 0x1F221000: a 16550 whose registers sit 8 bytes apart
+	 * with the DesignWare-style USR in the byte 0x38 slot, plus its
+	 * own clock from the MPLL (172.8 MHz here).  The retail C212 v2
+	 * has no UART pads routed, but qemu-bench models this port as the
+	 * console, and the installed U-Boot leaves UART0 initialised.
+	 * MS_IRQ line 34 = UART0.
+	 */
+	uart0: serial@221000 {
+		compatible = "mstar,msc313-uart";
+		reg = <0x221000 0x100>;
+		reg-shift = <3>;
+		reg-io-width = <1>;
+		clock-frequency = <172800000>;
+		interrupts-extended = <&intc_irq GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+		status = "okay";
+	};
+};
+
+/ {
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+};
