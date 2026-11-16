@@ -97,7 +97,7 @@ extern unsigned int rkvenc_debug;
 #define MPP_WORK_TIMEOUT_DELAY		200
 #define RKVENC_SESSION_MAX_BUFFERS	40
 #define RKVENC_MAX_CORE_NUM		2
-#define RKVENC_MAX_DCHS_ID		16
+#define RKVENC_MAX_DCHS_ID		4
 
 /* ---- Device types (must match MPP userspace MppClientType enum) ---- */
 enum MPP_DEVICE_TYPE {
@@ -217,8 +217,8 @@ enum RKVENC_VEPU_TYPE {
 #define INT_STA_LKT_ERR_STA		BIT(9)
 #define INT_STA_ERROR			(0x03f0)
 
-/* Dual-core handshake */
-#define DCHS_TXE			BIT(8)
+/* Dual-core handshake: tx enable lives at bit 4 of register 0x0304 */
+#define DCHS_TXE			BIT(4)
 
 /* ---- Clock mode ---- */
 enum MPP_CLOCK_MODE {
@@ -497,32 +497,41 @@ struct rkvenc_class_msg {
 	u32 valid;
 };
 
+/*
+ * Dual-core handshake ID.  This is the VEPU580 register 0x0304 layout used
+ * by the vendor driver (mpp_rkvenc2.c) and the MPP HAL
+ * (mpp/hal/rkenc/common/vepu580_common.h, reg193):
+ *
+ *   bits 0-1  txid      bits 2-3  rxid      bit 4  txe
+ *   bit  5    rxe       bits 6-15 dly       bits 16-26 ofst
+ *   bits 27-31 reserved (the 64-bit value's high dword is session_id)
+ *
+ * The handshake register is only 32 bits wide, so only val[0]'s low dword is
+ * written to hardware (via data[dcsh_class_ofst]); val[1] is software state.
+ */
 union rkvenc2_dual_core_handshake_id {
 	u64 val[2];
 	struct {
-		/* val[0] */
+		u32 txid	: 2;
+		u32 rxid	: 2;
 		u32 txe		: 1;
-		u32 reserved0	: 3;
-		u32 txid	: 4;
 		u32 rxe		: 1;
-		u32 reserved1	: 3;
-		u32 rxid	: 4;
-		u32 reserved2	: 16;
+		u32 reserve0	: 2;
+		u32 dly		: 8;
+		u32 offset	: 11;
+		u32 reserve1	: 5;
 		u32 session_id;
-		/* val[1] */
+		u32 working	: 1;
 		u32 txe_orig	: 1;
-		u32 reserved3	: 3;
-		u32 txid_orig	: 4;
 		u32 rxe_orig	: 1;
-		u32 reserved4	: 3;
-		u32 rxid_orig	: 4;
+		u32 txid_orig	: 2;
+		u32 rxid_orig	: 2;
 		u32 txe_map	: 1;
-		u32 reserved5	: 3;
-		u32 txid_map	: 4;
 		u32 rxe_map	: 1;
-		u32 reserved6	: 3;
-		u32 rxid_map	: 4;
-		u32 working;
+		u32 txid_map	: 2;
+		u32 rxid_map	: 2;
+		u32 reserve2	: 19;
+		u32 reserve3	: 32;
 	};
 };
 
