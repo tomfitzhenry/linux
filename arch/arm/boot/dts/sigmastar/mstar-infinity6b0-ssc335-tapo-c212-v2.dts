@@ -51,6 +51,24 @@
 		#size-cells = <1>;
 		ranges;
 
+		/* EMAC register-dump page for post-mortem comparison. */
+		earlycon-udp-dump@23ff0000 {
+			reg = <0x23ff0000 0x1000>;
+			no-map;
+		};
+
+		/* MAC loopback RX self-test page (one descriptor + 2 KiB). */
+		earlycon-udp-rxtest@23ff1000 {
+			reg = <0x23ff1000 0x1000>;
+			no-map;
+		};
+
+		/* M1 bring-up black box: MAC/PHY state for the fallback boot. */
+		earlycon-udp-blackbox@23ff2000 {
+			reg = <0x23ff2000 0x1000>;
+			no-map;
+		};
+
 		/* Fourth-last page: sstar_udp earlycon frame buffer. */
 		earlycon-udp@23ff3000 {
 			reg = <0x23ff3000 0x1000>;

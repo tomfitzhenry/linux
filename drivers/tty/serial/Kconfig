@@ -137,6 +137,40 @@ config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
 	  the real Ethernet driver owns the MAC (the console TX slot must not
 	  fight the driver); the M2 netconsole takes over there.
 
+config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+	bool "Record EMAC/PHY state in a reserved DRAM page"
+	default y
+	help
+	  Leave the MAC/PHY register state, frame counters and the last frame
+	  buffer words in a reserved DRAM page so a hardware boot without UART
+	  can be debugged by reading it back from the OpenIPC fallback boot
+	  (busybox devmem).  Harmless, but not needed in production.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX_PHYS
+	hex "SigmaStar UDP earlycon black box page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+	default 0x23ff2000
+	help
+	  Physical page used for the black box.  Must be above the IPL MIU
+	  BIST wipe (0x23efffff) and outside U-Boot's relocation region
+	  (0x23f20000..0x23fef460); keep it reserved/no-map in the DTS.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_RXTEST_PHYS
+	hex "SigmaStar UDP earlycon RX self-test page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	default 0x23ff1000
+	help
+	  Physical page for the MAC loopback RX self-test (one descriptor
+	  plus one 2 KiB buffer).  Must be reserved/no-map in the DTS.
+
+config SERIAL_EARLYCON_SSSTAR_UDP_DUMP_PHYS
+	hex "SigmaStar UDP earlycon register dump page"
+	depends on SERIAL_EARLYCON_SSSTAR_UDP
+	default 0x23ff0000
+	help
+	  Physical page receiving the X32 and RIU EMAC register dumps for
+	  post-mortem comparison against the live vendor driver.
+
 config SERIAL_EARLYCON_SSSTAR_UDP_EMAC_BASE
 	hex "SigmaStar EMAC X32 register base address"
 	default 0x1f343c00

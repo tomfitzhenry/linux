@@ -75,10 +75,36 @@
 
 /* EMAC X32 view offsets: 32-bit register G is at 2 * G. */
 #define SSTAR_EMAC_CTL			0x00
+#define SSTAR_EMAC_CFG			0x08
+#define SSTAR_EMAC_SR			0x10
+#define SSTAR_EMAC_RSR_ADDR		0x40
 #define SSTAR_EMAC_TAR			0x18
 #define SSTAR_EMAC_TCR			0x20
 #define SSTAR_EMAC_TSR			0x28
+#define SSTAR_EMAC_ISR			0x48
+#define SSTAR_EMAC_IMR			0x60
 #define SSTAR_EMAC_IDR			0x58
+
+/* The internal Albany PHY is directly readable in RIU banks 0x31..0x33. */
+#define SSTAR_PHY_BASE			0x1f006200
+
+/*
+ * The EMAC's 16-bit RIU view (what the vendor driver and U-Boot use).  Each
+ * 32-bit register G is two 16-bit halves at +2G and +2G+4; the MStar "EMAC1"
+ * bank sits at +0x200 and the JULIAN extras start at +0x208.
+ */
+#define SSTAR_EMAC_RIU_BASE		0x1f2a2000
+#define SSTAR_EMAC1_BANK		0x200
+#define SSTAR_EMAC1_TXQ_USED		(SSTAR_EMAC1_BANK + 2 * 0x24)
+#define SSTAR_EMAC1_TXQ_ENABLE		(SSTAR_EMAC1_BANK + 2 * 0x24 + 1)
+#define SSTAR_EMAC1_TXQ_EN_BIT		BIT(7)
+/* JULIAN register offsets within the EMAC RIU mapping. */
+#define SSTAR_JULIAN_0100		(2 * 0x100)
+#define SSTAR_JULIAN_0104		(2 * 0x104)
+#define SSTAR_JULIAN_0108		(2 * 0x108)
+#define SSTAR_JULIAN_0138		(2 * 0x138)
+#define SSTAR_JULIAN_013C		(2 * 0x13c)
+#define SSTAR_JULIAN_SW_DESC_ENABLE	BIT(0)
 
 #define SSTAR_EMAC_CTL_TE		BIT(3)
 /* TSR bits: buffer not queued and transmit idle. */
@@ -93,6 +119,129 @@
 
 /* CPU physical memory base: DMA bus addresses are physical - this. */
 #define SSTAR_DMA_OFFSET		0x20000000UL
+
+/*
+ * M1 bring-up black box: the board has no UART, so when a hardware boot
+ * misbehaves the only affordable diagnostic is to leave the MAC/PHY register
+ * state in a reserved DRAM page and read it back over SSH from the OpenIPC
+ * fallback boot (busybox devmem 0x23ff2000).  It sits between the frame page
+ * (0x23ff3000) and above U-Boot's 0x23f20000..0x23fef460 relocation, i.e. in
+ * DRAM the IPL's MIU BIST does not wipe.  Cheap: a handful of word stores per
+ * frame, disabled with SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX=n.
+ */
+#ifdef CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+#define SSTAR_BB_PHYS			CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX_PHYS
+#define SSTAR_BB_MAGIC			0x32313243U	/* "C212" LE */
+#define SSTAR_BB_WORDS			64
+
+enum sstar_udp_bb_word {
+	SSTAR_BB_MAGIC_W = 0,
+	SSTAR_BB_VERSION_W,
+	SSTAR_BB_EMAC_PHYS_W,
+	SSTAR_BB_EMAC_OFF_W,
+	SSTAR_BB_IOMAPPED_W,
+	SSTAR_BB_CTL_PRE_W,
+	SSTAR_BB_CFG_W,
+	SSTAR_BB_SR_W,
+	SSTAR_BB_TSR_PRE_W,
+	SSTAR_BB_ISR_W,
+	SSTAR_BB_IMR_W,
+	SSTAR_BB_IDR_W,
+	SSTAR_BB_CTL_POST_W,
+	SSTAR_BB_PHY_BMSR_W,
+	SSTAR_BB_PHY_BMCR_W,
+	SSTAR_BB_L3_STATUS16_W,
+	SSTAR_BB_L3_STATUS32_W,
+	SSTAR_BB_FRAMES_W,
+	SSTAR_BB_TSR_BEFORE_W,
+	SSTAR_BB_TSR_AFTER_W,
+	SSTAR_BB_LAST_LEN_W,
+	SSTAR_BB_FRAME_W0_W,
+	SSTAR_BB_FRAME_W1_W,
+	SSTAR_BB_REMAP_DONE_W,
+	SSTAR_BB_CTL_LATE_W,
+	SSTAR_BB_TSR_LATE_W,
+	SSTAR_BB_SR_LATE_W,
+	SSTAR_BB_PHY_BMSR_LATE_W,
+	SSTAR_BB_IMR_LATE_W,
+	SSTAR_BB_TXQ_EN_PRE_W,
+	SSTAR_BB_TXQ_EN_POST_W,
+	SSTAR_BB_TXQ_USED_PRE_W,
+	SSTAR_BB_TXQ_USED_POST_W,
+	SSTAR_BB_JULIAN_104_PRE_W,
+	SSTAR_BB_JULIAN_104_POST_W,
+	SSTAR_BB_TXQ_USED_LATE_W,
+	SSTAR_BB_X32_CTL_LATE_W,
+	SSTAR_BB_JULIAN_0100_W,
+	SSTAR_BB_JULIAN_0108_W,
+	SSTAR_BB_JULIAN_0138_W,
+	SSTAR_BB_JULIAN_013C_W,
+	SSTAR_BB_TXQ_WORD_PRE_W,
+	SSTAR_BB_TXQ_WORD_POST_W,
+	SSTAR_BB_SA2L_RIU_W,
+	SSTAR_BB_CTL_READW_W,
+	SSTAR_BB_X32_JULIAN104_PRE_W,
+	SSTAR_BB_X32_JULIAN104_POST_W,
+	SSTAR_BB_X32_XTSR_PRE_W,
+	SSTAR_BB_X32_XTSR_POST_W,
+	SSTAR_BB_CTL_RIU_POST_W,
+	SSTAR_BB_X32_TAR_POST_W,
+	SSTAR_BB_LOOP_DESC0_W,
+	SSTAR_BB_LOOP_DESC1_W,
+	SSTAR_BB_LOOP_RXBUF0_W,
+	SSTAR_BB_LOOP_RXBUF1_W,
+	SSTAR_BB_LOOP_RXBUF2_W,
+	SSTAR_BB_LOOP_RSR_W,
+	SSTAR_BB_LOOP_CTL_W,
+};
+
+static void __iomem *sstar_udp_bb;
+static u32 sstar_udp_bb_early[SSTAR_BB_WORDS];
+static bool sstar_udp_bb_early_valid;
+
+/*
+ * ioremap() is not available while setup() runs (see sstar_udp_try_ioremap()),
+ * so samples taken that early are buffered in .init.data and replayed when
+ * the early_initcall installs the permanent mapping.
+ */
+static void sstar_udp_bb_put(unsigned int idx, u32 val)
+{
+	if (idx >= SSTAR_BB_WORDS)
+		return;
+	if (sstar_udp_bb) {
+		writel_relaxed(val, sstar_udp_bb + idx * 4);
+	} else {
+		sstar_udp_bb_early[idx] = val;
+		sstar_udp_bb_early_valid = true;
+	}
+}
+
+static void __init sstar_udp_bb_map(void)
+{
+	unsigned int i;
+
+	if (sstar_udp_bb)
+		return;
+	sstar_udp_bb = ioremap(SSTAR_BB_PHYS, PAGE_SIZE);
+	if (!sstar_udp_bb)
+		return;
+	memset_io(sstar_udp_bb, 0, PAGE_SIZE);
+	writel_relaxed(SSTAR_BB_MAGIC, sstar_udp_bb + SSTAR_BB_MAGIC_W * 4);
+	writel_relaxed(1, sstar_udp_bb + SSTAR_BB_VERSION_W * 4);
+	if (!sstar_udp_bb_early_valid)
+		return;
+	for (i = 0; i < SSTAR_BB_WORDS; i++) {
+		if (i == SSTAR_BB_MAGIC_W || i == SSTAR_BB_VERSION_W)
+			continue;
+		if (sstar_udp_bb_early[i])
+			writel_relaxed(sstar_udp_bb_early[i],
+				       sstar_udp_bb + i * 4);
+	}
+}
+#else
+static void sstar_udp_bb_put(unsigned int idx, u32 val) { }
+static void __init sstar_udp_bb_map(void) { }
+#endif
 
 /* Bounded spins: a broken MAC block must never hang the boot console. */
 #define SSTAR_POLL_LIMIT		1000000
@@ -119,6 +268,7 @@ static bool sstar_udp_iomapped;
 static void __iomem *sstar_udp_frame_mapped;
 static void __iomem *sstar_udp_l3_mapped;
 static void __iomem *sstar_udp_emac_mapped;
+static void __iomem *sstar_udp_riu_mapped;
 
 /*
  * Internet checksum helpers.  The frame layout is fixed and the header is
@@ -245,6 +395,89 @@ static void __iomem *sstar_udp_emac_va(void)
 	return sstar_udp_fixmap(sstar_udp_emac_phys);
 }
 
+static void __iomem *sstar_udp_phy_va(void)
+{
+	return sstar_udp_fixmap(SSTAR_PHY_BASE);
+}
+
+/*
+ * One fixmap slot serves every early (pre-early_initcall) mapping, so never
+ * hold an X32/RIU/PHY/frame pointer across another sstar_udp_*_va() call:
+ * map the page again for every access instead.
+ */
+static u32 sstar_udp_emac_read(unsigned int off)
+{
+	return readl(sstar_udp_emac_va() + off);
+}
+
+static void sstar_udp_emac_write(unsigned int off, u32 val)
+{
+	writel(val, sstar_udp_emac_va() + off);
+}
+
+static void __iomem *sstar_udp_riu_va(void)
+{
+	if (sstar_udp_iomapped)
+		return sstar_udp_riu_mapped;
+
+	return sstar_udp_fixmap(SSTAR_EMAC_RIU_BASE);
+}
+
+static u16 sstar_udp_riu_read16(unsigned int off);
+static void sstar_udp_riu_write16(unsigned int off, u16 val);
+
+/*
+ * Make sure the MAC's hardware TX queue is enabled.  The vendor driver's
+ * MHal_EMAC_Init()/_MHal_EMAC_TXQ_Enable() sets BIT(7) of EMAC1 register
+ * 0x25 and sets SOFTWARE_DESCRIPTOR_ENABLE in JULIAN 0x104 before inserting
+ * frames with TAR/TCR; U-Boot's eth_halt clears the enable, so the kernel
+ * has to put it back or every TAR/TCR write is dropped (the MAC reports
+ * transmit underrun/corruption in TSR and nothing reaches the wire).
+ */
+static void sstar_udp_emac_txq_ping(void)
+{
+	void __iomem *riu = sstar_udp_riu_va();
+	u8 used;
+	u16 j;
+
+	used = readb(riu + SSTAR_EMAC1_TXQ_USED) & 0x7f;
+	j = readw(riu + SSTAR_JULIAN_0104);
+
+	sstar_udp_bb_put(SSTAR_BB_TXQ_USED_PRE_W, used);
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_104_PRE_W, j);
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_0100_W,
+			 readw(riu + SSTAR_JULIAN_0100));
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_0108_W,
+			 readw(riu + SSTAR_JULIAN_0108));
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_0138_W,
+			 readw(riu + SSTAR_JULIAN_0138));
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_013C_W,
+			 readw(riu + SSTAR_JULIAN_013C));
+	sstar_udp_bb_put(SSTAR_BB_TXQ_EN_PRE_W,
+			 !!(readb(riu + SSTAR_EMAC1_TXQ_ENABLE) &
+			    SSTAR_EMAC1_TXQ_EN_BIT));
+
+	{
+		u16 txq = readl(riu + SSTAR_EMAC1_TXQ_USED) & 0xffff;
+
+		sstar_udp_bb_put(SSTAR_BB_TXQ_WORD_PRE_W, txq);
+		/* BIT(7) of the high byte = bit 15 of the 16-bit word. */
+		writel(txq | 0x8000, riu + SSTAR_EMAC1_TXQ_USED);
+		sstar_udp_bb_put(SSTAR_BB_TXQ_WORD_POST_W,
+				 readl(riu + SSTAR_EMAC1_TXQ_USED) & 0xffff);
+	}
+	sstar_udp_riu_write16(SSTAR_JULIAN_0104,
+			      j | SSTAR_JULIAN_SW_DESC_ENABLE);
+
+	sstar_udp_bb_put(SSTAR_BB_TXQ_EN_POST_W,
+			 !!(readb(riu + SSTAR_EMAC1_TXQ_ENABLE) &
+			    SSTAR_EMAC1_TXQ_EN_BIT));
+	sstar_udp_bb_put(SSTAR_BB_TXQ_USED_POST_W,
+			 readb(riu + SSTAR_EMAC1_TXQ_USED) & 0x7f);
+	sstar_udp_bb_put(SSTAR_BB_JULIAN_104_POST_W,
+			 readw(riu + SSTAR_JULIAN_0104));
+}
+
 /*
  * Flush the L3 AXI->MIU write pipe.  This is the sequence the vendor
  * bootloader and kernel use; without it the MAC may DMA a stale frame on
@@ -256,34 +489,93 @@ static void sstar_udp_flush_l3(void)
 {
 	void __iomem *l3 = sstar_udp_l3_va();
 	unsigned int i;
+	u16 status;
 
-	writel_relaxed(SSTAR_L3BRIDGE_FLUSH_1, l3 + SSTAR_L3BRIDGE_FLUSH);
-	writel_relaxed(SSTAR_L3BRIDGE_FLUSH_2, l3 + SSTAR_L3BRIDGE_FLUSH);
-
-	for (i = 0; i < SSTAR_POLL_LIMIT; i++) {
-		if (readl_relaxed(l3 + SSTAR_L3BRIDGE_STATUS) &
-		    SSTAR_L3BRIDGE_DONE)
-			return;
-		cpu_relax();
-	}
-}
-
-/* Hand one complete frame to the MAC's single-packet TX slot. */
-static void sstar_udp_kick(unsigned int len)
-{
-	void __iomem *emac = sstar_udp_emac_va();
-	unsigned int i;
+	/*
+	 * The vendor (openipc/sigmastar-infinity6b0
+	 * arch/arm/mach-sstar/infinity6b0/soc.c:mstar_chip_flush_miu_pipe())
+	 * does this with 16-bit accesses: write 0x10 then 0x11 to the flush
+	 * register and poll BIT(12) of the status register.  The RIU is a
+	 * 16-bit register file, so match that access width exactly rather
+	 * than assuming a 32-bit access is equivalent.
+	 */
+	writew_relaxed(SSTAR_L3BRIDGE_FLUSH_1, l3 + SSTAR_L3BRIDGE_FLUSH);
+	writew_relaxed(SSTAR_L3BRIDGE_FLUSH_2, l3 + SSTAR_L3BRIDGE_FLUSH);
 
 	for (i = 0; i < SSTAR_POLL_LIMIT; i++) {
-		if ((readl(emac + SSTAR_EMAC_TSR) & SSTAR_EMAC_TSR_IDLE) ==
-		    SSTAR_EMAC_TSR_IDLE)
+		status = readw_relaxed(l3 + SSTAR_L3BRIDGE_STATUS);
+		if (status & SSTAR_L3BRIDGE_DONE)
 			break;
 		cpu_relax();
 	}
+	sstar_udp_bb_put(SSTAR_BB_L3_STATUS16_W, status);
+	sstar_udp_bb_put(SSTAR_BB_L3_STATUS32_W,
+			 readl_relaxed(l3 + SSTAR_L3BRIDGE_STATUS));
+}
 
-	writel((u32)(sstar_udp_frame_phys - SSTAR_DMA_OFFSET),
-	       emac + SSTAR_EMAC_TAR);
-	writel(len, emac + SSTAR_EMAC_TCR);
+/* Hand one complete frame to the MAC's single-packet TX slot. */
+/*
+ * The EMAC's normal registers are accessed through its 16-bit RIU view, the
+ * same view U-Boot's own Ethernet driver uses: register G occupies the two
+ * 16-bit words at +2G and +2G+4, and the command side effects (transmit,
+ * etc.) fire when the high half is written.  The 32-bit "X32" alias at
+ * 0x1F343C00 reads back the same state, but writing a command through it was
+ * observed to have no effect on the MAC on the real camera (frames counted,
+ * TSR changed, nothing on the wire), while U-Boot's RIU writes do transmit.
+ */
+static u16 sstar_udp_riu_read16(unsigned int off)
+{
+	return readw(sstar_udp_riu_va() + off);
+}
+
+/*
+ * U-Boot's own EMAC driver performs the RIU accesses as 32-bit stores to the
+ * halfword address (see the str/ldr pair around 0x23e19c54 in the installed
+ * U-Boot): a 32-bit store carries the 16-bit register value.  Plain 16-bit
+ * stores were observed to be dropped by the RIU on the real camera, so match
+ * U-Boot here.
+ */
+static void sstar_udp_riu_write16(unsigned int off, u16 val)
+{
+	writel(val, sstar_udp_riu_va() + off);
+}
+
+static u32 sstar_udp_riu_read_reg(unsigned int g)
+{
+	return sstar_udp_riu_read16(2 * g) |
+	       ((u32)sstar_udp_riu_read16(2 * g + 4) << 16);
+}
+
+static void sstar_udp_riu_write_reg(unsigned int g, u32 val)
+{
+	sstar_udp_riu_write16(2 * g, val & 0xffff);
+	sstar_udp_riu_write16(2 * g + 4, val >> 16);	/* fires commands */
+}
+
+static void sstar_udp_kick(unsigned int len)
+{
+	unsigned int i;
+	u32 tsr = 0;
+
+	for (i = 0; i < SSTAR_POLL_LIMIT; i++) {
+		tsr = sstar_udp_emac_read(SSTAR_EMAC_TSR);
+		if ((tsr & SSTAR_EMAC_TSR_IDLE) == SSTAR_EMAC_TSR_IDLE)
+			break;
+		cpu_relax();
+	}
+	sstar_udp_bb_put(SSTAR_BB_TSR_BEFORE_W, tsr);
+
+	sstar_udp_riu_write_reg(0x0c,
+		(u32)(sstar_udp_frame_phys - SSTAR_DMA_OFFSET));	/* TAR */
+	sstar_udp_riu_write_reg(0x10, len);			/* TCR */
+	sstar_udp_bb_put(SSTAR_BB_X32_TAR_POST_W,
+			 sstar_udp_emac_read(SSTAR_EMAC_TAR));
+
+	/* Sample the MAC afterwards; a completed TX clears the busy bits. */
+	wmb();
+	sstar_udp_bb_put(SSTAR_BB_TSR_AFTER_W,
+			 sstar_udp_emac_read(SSTAR_EMAC_TSR));
+	sstar_udp_bb_put(SSTAR_BB_LAST_LEN_W, len);
 }
 
 static void sstar_udp_send(const char *payload, unsigned int len)
@@ -310,6 +602,15 @@ static void sstar_udp_send(const char *payload, unsigned int len)
 	memcpy_toio(frame + SSTAR_UDP_HDR_LEN, payload, len);
 	if (pad)
 		memset_io(frame + SSTAR_UDP_HDR_LEN + len, 0, pad);
+
+#ifdef CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
+	sstar_udp_bb_put(SSTAR_BB_FRAME_W0_W, readl(frame));
+	sstar_udp_bb_put(SSTAR_BB_FRAME_W1_W, readl(frame + 4));
+	{
+		static u32 bb_frames;
+		sstar_udp_bb_put(SSTAR_BB_FRAMES_W, ++bb_frames);
+	}
+#endif
 
 	/* The frame stores must reach MIU before the MAC reads it. */
 	wmb();
@@ -389,25 +690,29 @@ static int __init sstar_udp_parse_ipv4(const char *s, u8 ip[4])
  */
 static bool __init sstar_udp_try_ioremap(void)
 {
-	void __iomem *frame, *l3, *emac;
+	void __iomem *frame, *l3, *emac, *riu;
 
 	frame = ioremap(sstar_udp_frame_phys, PAGE_SIZE);
 	l3 = ioremap(CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_L3BRIDGE_BASE, PAGE_SIZE);
 	emac = ioremap(sstar_udp_emac_phys & PAGE_MASK, PAGE_SIZE);
+	riu = ioremap(SSTAR_EMAC_RIU_BASE, PAGE_SIZE);
 
-	if (!frame || !l3 || !emac) {
+	if (!frame || !l3 || !emac || !riu) {
 		if (frame)
 			iounmap(frame);
 		if (l3)
 			iounmap(l3);
 		if (emac)
 			iounmap(emac);
+		if (riu)
+			iounmap(riu);
 		return false;
 	}
 
 	sstar_udp_frame_mapped = frame;
 	sstar_udp_l3_mapped = l3;
 	sstar_udp_emac_mapped = emac + sstar_udp_emac_off;
+	sstar_udp_riu_mapped = riu;
 	sstar_udp_iomapped = true;
 
 	return true;
@@ -415,7 +720,6 @@ static bool __init sstar_udp_try_ioremap(void)
 
 static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 {
-	void __iomem *emac;
 	unsigned long base = sstar_udp_emac_phys;
 	u8 mac[6], ip[4];
 
@@ -468,11 +772,55 @@ static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 	if (IS_ENABLED(CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT))
 		dev->con->flags &= ~CON_BOOT;
 
-	/* Mask MAC interrupts and re-enable only the transmitter. */
-	emac = sstar_udp_emac_va();
-	writel(0xffffffff, emac + SSTAR_EMAC_IDR);
-	writel(readl(emac + SSTAR_EMAC_CTL) | SSTAR_EMAC_CTL_TE,
-	       emac + SSTAR_EMAC_CTL);
+	sstar_udp_bb_map();
+	sstar_udp_bb_put(SSTAR_BB_EMAC_PHYS_W, (u32)sstar_udp_emac_phys);
+	sstar_udp_bb_put(SSTAR_BB_EMAC_OFF_W, (u32)sstar_udp_emac_off);
+	sstar_udp_bb_put(SSTAR_BB_IOMAPPED_W, sstar_udp_iomapped ? 1 : 0);
+	sstar_udp_bb_put(SSTAR_BB_CTL_PRE_W, sstar_udp_riu_read_reg(0x00));
+	sstar_udp_bb_put(SSTAR_BB_CFG_W, sstar_udp_riu_read_reg(0x04));
+	sstar_udp_bb_put(SSTAR_BB_SR_W, sstar_udp_riu_read_reg(0x08));
+	sstar_udp_bb_put(SSTAR_BB_TSR_PRE_W, sstar_udp_riu_read_reg(0x14));
+	sstar_udp_bb_put(SSTAR_BB_ISR_W, sstar_udp_riu_read_reg(0x24));
+	sstar_udp_bb_put(SSTAR_BB_IMR_W, sstar_udp_riu_read_reg(0x30));
+
+	/*
+	 * Configure the MAC through the X32 view (the view the vendor 4.9
+	 * driver uses for these registers, and the one whose writes land on
+	 * the real camera): mask all interrupts, then enable RX+TX like the
+	 * vendor MDev_EMAC_start(), keeping the management-port bit U-Boot
+	 * leaves set, and set JULIAN 0x104 SOFTWARE_DESCRIPTOR_ENABLE - the
+	 * bit that makes TAR/TCR a single-packet transmit.  It is set on the
+	 * live vendor 4.9 system but clear in the state U-Boot leaves behind.
+	 */
+	/* Write CTL through the RIU view, the one U-Boot itself uses. */
+	sstar_udp_riu_write_reg(0x2c, 0xffffffff);		/* IDR */
+	sstar_udp_riu_write_reg(0x00,
+				(sstar_udp_riu_read_reg(0x00) & 0xffff) |
+				0x1c);				/* MPE|RE|TE */
+	/* Cross-check through the other view: did the RIU write land? */
+	sstar_udp_bb_put(SSTAR_BB_CTL_POST_W,
+			 sstar_udp_emac_read(SSTAR_EMAC_CTL));
+	sstar_udp_bb_put(SSTAR_BB_CTL_RIU_POST_W,
+			 sstar_udp_riu_read_reg(0x00));
+	sstar_udp_bb_put(SSTAR_BB_CTL_READW_W,
+			 readw(sstar_udp_riu_va() + 2 * 0x00));
+	sstar_udp_bb_put(SSTAR_BB_IDR_W, sstar_udp_riu_read_reg(0x2c));
+
+	sstar_udp_bb_put(SSTAR_BB_X32_JULIAN104_PRE_W,
+			 sstar_udp_emac_read(2 * 0x104));
+	sstar_udp_emac_write(2 * 0x104,
+			     sstar_udp_emac_read(2 * 0x104) |
+			     SSTAR_JULIAN_SW_DESC_ENABLE);
+	sstar_udp_bb_put(SSTAR_BB_X32_JULIAN104_POST_W,
+			 sstar_udp_emac_read(2 * 0x104));
+	sstar_udp_bb_put(SSTAR_BB_X32_XTSR_POST_W,
+			 sstar_udp_riu_read_reg(0x14));
+
+	/* The internal "Albany" PHY: register N is the 16-bit RIU word at +4N. */
+	sstar_udp_bb_put(SSTAR_BB_PHY_BMCR_W,
+			 readw(sstar_udp_phy_va() + 0 * 4));
+	sstar_udp_bb_put(SSTAR_BB_PHY_BMSR_W,
+			 readw(sstar_udp_phy_va() + 1 * 4));
 
 	dev->con->write = sstar_udp_console_write;
 	sstar_udp_enabled = true;
@@ -480,6 +828,109 @@ static int __init sstar_udp_setup(struct earlycon_device *dev, const char *opt)
 	return 0;
 }
 EARLYCON_DECLARE(sstar_udp, sstar_udp_setup);
+
+/*
+ * MAC loopback self-test: put the MAC in loopback, hand it one perfectly
+ * formed frame with the normal TAR/TCR transmit path and see whether the
+ * receive side stores it back to memory.  This separates "the MAC transmits
+ * and DMAs both ways" from "the frames leave the MAC but never reach the
+ * wire/PHY", which is otherwise unobservable without a UART.
+ */
+#define SSTAR_RX_TEST_PHYS	CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_RXTEST_PHYS
+
+static void __init sstar_udp_loopback_test(void)
+{
+	void __iomem *riu, *rx, *emac;
+	u32 ring_bus, buf_bus, desc0, desc1;
+	unsigned int i;
+	static const char payload[] = "C212-LOOPBACK-SELFTEST";
+
+	if (!sstar_udp_enabled)
+		return;
+
+	rx = ioremap(SSTAR_RX_TEST_PHYS, PAGE_SIZE);
+	if (!rx)
+		return;
+	memset_io(rx, 0, PAGE_SIZE);
+
+	ring_bus = (u32)(SSTAR_RX_TEST_PHYS - SSTAR_DMA_OFFSET);
+	buf_bus = ring_bus + 0x800;
+
+	/* One-entry RX ring: DONE|WRAP, buffer address in bits 31:2. */
+	writel(buf_bus | 0x3, rx);
+	writel(0, rx + 4);
+
+	riu = sstar_udp_riu_va();
+	/* RBQP = ring, then enable RX + loopback + TX. */
+	sstar_udp_riu_write_reg(0x18, ring_bus);
+	sstar_udp_riu_write_reg(0x00,
+				(sstar_udp_riu_read_reg(0x00) & 0xffff) |
+				0x1d);			/* MPE|RE|TE|LB */
+
+	/* Send one frame through the normal path. */
+	sstar_udp_send(payload, sizeof(payload) - 1);
+
+	for (i = 0; i < 100000; i++) {
+		if (!(readl(rx) & 1))		/* DONE cleared = received */
+			break;
+		cpu_relax();
+	}
+
+	desc0 = readl(rx);
+	desc1 = readl(rx + 4);
+	sstar_udp_bb_put(SSTAR_BB_LOOP_DESC0_W, desc0);
+	sstar_udp_bb_put(SSTAR_BB_LOOP_DESC1_W, desc1);
+	sstar_udp_bb_put(SSTAR_BB_LOOP_RXBUF0_W, readl(rx + 0x800));
+	sstar_udp_bb_put(SSTAR_BB_LOOP_RXBUF1_W, readl(rx + 0x804));
+	sstar_udp_bb_put(SSTAR_BB_LOOP_RXBUF2_W, readl(rx + 0x808));
+	sstar_udp_bb_put(SSTAR_BB_LOOP_RSR_W, sstar_udp_riu_read_reg(0x20));
+	sstar_udp_bb_put(SSTAR_BB_LOOP_CTL_W, sstar_udp_riu_read_reg(0x00));
+
+	/* Leave loopback, restore RX off (the boot never needs RX). */
+	sstar_udp_riu_write_reg(0x00,
+				(sstar_udp_riu_read_reg(0x00) & 0xffff) &
+				~(0x1 | 0x4));		/* clear LB|RE */
+	emac = sstar_udp_emac_va();
+	writel(0, emac + SSTAR_EMAC_RSR_ADDR);	/* clear RX status */
+	iounmap(rx);
+}
+
+/*
+ * Crash-box register dump: X32 view (0x1F343C00..0x1F343E00, as 32-bit words)
+ * followed by the EMAC RIU view (0x1F2A2000..0x1F2A2400, as 16-bit halves)
+ * into a reserved page, so the post-fallback OpenIPC boot can diff the state
+ * mainline inherits from U-Boot against the live vendor driver's state.
+ */
+#define SSTAR_DUMP_PHYS	CONFIG_SERIAL_EARLYCON_SSSTAR_UDP_DUMP_PHYS
+
+static void __init sstar_udp_reg_dump(void)
+{
+	void __iomem *out, *emac, *riu;
+	unsigned int i;
+
+	if (!sstar_udp_enabled || !sstar_udp_iomapped)
+		return;
+
+	out = ioremap(SSTAR_DUMP_PHYS, PAGE_SIZE);
+	if (!out)
+		return;
+	memset_io(out, 0, PAGE_SIZE);
+
+	emac = sstar_udp_emac_va();
+	for (i = 0; i < 0x200; i += 4)
+		writel_relaxed(readl(emac + i), out + i);
+
+	riu = sstar_udp_riu_va();
+	for (i = 0; i < 0x400; i += 2)
+		writew_relaxed(readw(riu + i), out + 0x200 + i);
+
+	/* The internal Albany PHY window: banks 0x31..0x33 at 0x1F006200. */
+	riu = sstar_udp_phy_va();
+	for (i = 0; i < 0x200; i += 2)
+		writew_relaxed(readw(riu + i), out + 0x600 + i);
+
+	iounmap(out);
+}
 
 /* The mm is up once the early initcalls run: drop the fixmap remapping. */
 static int __init sstar_udp_remap(void)
@@ -491,6 +942,37 @@ static int __init sstar_udp_remap(void)
 		pr_info("sstar_udp: switched to ioremap packet buffer\n");
 	else
 		pr_warn("sstar_udp: ioremap failed, keeping fixmap mappings\n");
+
+	/* Install the black box page and replay the pre-mm samples. */
+	sstar_udp_bb_map();
+
+	/* Record what the MAC/PHY look like once the mm is up, for the black box. */
+	{
+		void __iomem *emac = sstar_udp_emac_va();
+
+		sstar_udp_bb_put(SSTAR_BB_REMAP_DONE_W, sstar_udp_iomapped ? 1 : 0);
+		sstar_udp_bb_put(SSTAR_BB_CTL_LATE_W,
+				 sstar_udp_riu_read_reg(0x00));
+		sstar_udp_bb_put(SSTAR_BB_TSR_LATE_W,
+				 sstar_udp_riu_read_reg(0x14));
+		sstar_udp_bb_put(SSTAR_BB_SR_LATE_W,
+				 sstar_udp_riu_read_reg(0x08));
+		sstar_udp_bb_put(SSTAR_BB_IMR_LATE_W,
+				 sstar_udp_riu_read_reg(0x30));
+		/* Keep the X32 read-back as a cross-check for the black box. */
+		sstar_udp_bb_put(SSTAR_BB_X32_CTL_LATE_W,
+				 readl(emac + SSTAR_EMAC_CTL));
+		sstar_udp_bb_put(SSTAR_BB_PHY_BMSR_LATE_W,
+				 readw(sstar_udp_phy_va() + 1 * 4));
+		sstar_udp_bb_put(SSTAR_BB_TXQ_USED_LATE_W,
+				 readb(sstar_udp_riu_va() +
+				       SSTAR_EMAC1_TXQ_USED) & 0x7f);
+		/* One more enable in case something cleared it during boot. */
+		sstar_udp_emac_txq_ping();
+	}
+
+	sstar_udp_loopback_test();
+	sstar_udp_reg_dump();
 
 	return 0;
 }
