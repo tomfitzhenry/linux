@@ -169,8 +169,9 @@ SYM_TYPED_FUNC_START(cpu_v7_do_resume)
 	mcrr	p15, 0, r1, ip, c2	@ TTB 0
 	mcrr	p15, 1, r5, r7, c2	@ TTB 1
 #else
-	ALT_SMP(orr	r1, r1, #TTB_FLAGS_SMP)
-	ALT_UP(orr	r1, r1, #TTB_FLAGS_UP)
+	tst	r1, #0x7f
+	ALT_SMP(orreq	r1, r1, #TTB_FLAGS_SMP)
+	ALT_UP(orreq	r1, r1, #TTB_FLAGS_UP)
 	mcr	p15, 0, r1, c2, c0, 0	@ TTB 0
 	mcr	p15, 0, r7, c2, c0, 1	@ TTB 1
 #endif
@@ -216,7 +217,9 @@ SYM_FUNC_END(cpu_ca9mp_do_resume)
 #endif
 
 #ifdef CONFIG_CPU_PJ4B
+#ifdef CONFIG_ARM_LPAE
 	globl_equ	cpu_pj4b_switch_mm,     cpu_v7_switch_mm
+#endif
 	globl_equ	cpu_pj4b_set_pte_ext,	cpu_v7_set_pte_ext
 	globl_equ	cpu_pj4b_proc_init,	cpu_v7_proc_init
 	globl_equ	cpu_pj4b_proc_fin, 	cpu_v7_proc_fin
@@ -252,6 +255,10 @@ SYM_TYPED_FUNC_START(cpu_pj4b_do_resume)
 	mcr	p15, 1, r8, c15, c1, 2	@ restore CP15 - Aux Debug Modes Ctrl 2
 	mcr	p15, 1, r9, c15, c1, 1  @ restore CP15 - Aux Debug Modes Ctrl 1
 	mcr	p15, 0, r10, c9, c14, 0  @ restore CP15 - PMC
+#if defined(CONFIG_MMU) && !defined(CONFIG_ARM_LPAE)
+	ALT_SMP(orr	r1, r1, #TTB_FLAGS_SMP)
+	ALT_UP(orr	r1, r1, #TTB_IRGN_WBWA | TTB_RGN_OC_WBWA)
+#endif
 	b cpu_v7_do_resume
 SYM_FUNC_END(cpu_pj4b_do_resume)
 #endif
@@ -483,6 +490,13 @@ __v7_pj4b_setup:
 	orr	r0, r0, #PJ4B_WFI_WFE
 	mcr	p15, 1,	r0, c15, c1, 0
 
+#if defined(CONFIG_MMU) && !defined(CONFIG_ARM_LPAE)
+	ALT_SMP(orr	r4, r4, #TTB_FLAGS_SMP)
+	ALT_UP(orr	r4, r4, #TTB_IRGN_WBWA | TTB_RGN_OC_WBWA)
+	ALT_SMP(orr	r8, r8, #TTB_FLAGS_SMP)
+	ALT_UP(orr	r8, r8, #TTB_IRGN_WBWA | TTB_RGN_OC_WBWA)
+#endif
+
 #endif /* CONFIG_CPU_PJ4B */
 
 __v7_setup:
@@ -710,7 +724,7 @@ __v7_ca8_proc_info:
 __v7_pj4b_proc_info:
 	.long	0x560f5800
 	.long	0xff0fff00
-	__v7_proc __v7_pj4b_proc_info, __v7_pj4b_setup, proc_fns = pj4b_processor_functions
+	__v7_proc __v7_pj4b_proc_info, __v7_pj4b_setup, mm_mmuflags = PMD_SECT_WBWA, proc_fns = pj4b_processor_functions
 	.size	__v7_pj4b_proc_info, . - __v7_pj4b_proc_info
 #endif
 

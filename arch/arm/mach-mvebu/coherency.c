@@ -31,6 +31,7 @@
 #include <asm/cacheflush.h>
 #include <asm/mach/map.h>
 #include <asm/dma-mapping.h>
+#include <asm/pgtable.h>
 #include "coherency.h"
 #include "mvebu-soc-id.h"
 
@@ -191,6 +192,11 @@ static void __init armada_375_380_coherency_init(struct device_node *np)
 	}
 }
 
+static bool writealloc_in_effect(void)
+{
+	return (pgprot_val(pgprot_kernel) & L_PTE_MT_MASK) == L_PTE_MT_WRITEALLOC;
+}
+
 static int coherency_type(void)
 {
 	struct device_node *np;
@@ -199,31 +205,35 @@ static int coherency_type(void)
 
 	/*
 	 * The coherency fabric is needed:
-	 * - For coherency between processors on Armada XP, so only
-	 *   when SMP is enabled.
-	 * - For coherency between the processor and I/O devices, but
-	 *   this coherency requires many pre-requisites (write
-	 *   allocate cache policy, shareable pages, SMP bit set) that
-	 *   are only meant in SMP situations.
+	 * - For coherency between processors (Armada XP only), when
+	 *   SMP is enabled.
+	 * - For coherency between CPU and I/O devices, which requires:
+	 *   - write-allocate cache policy (all SoCs)
+	 *   - shareable page tables (multi-core SoCs only)
+	 *   - SMP bit set (multi-core SoCs only)
 	 *
-	 * Note that this means that on Armada 370, there is currently
-	 * no way to use hardware I/O coherency, because even when
-	 * CONFIG_SMP is enabled, is_smp() returns false due to the
-	 * Armada 370 being a single-core processor. To lift this
-	 * limitation, we would have to find a way to make the cache
-	 * policy set to write-allocate (on all Armada SoCs), and to
-	 * set the shareable attribute in page tables (on all Armada
-	 * SoCs except the Armada 370). Unfortunately, such decisions
-	 * are taken very early in the kernel boot process, at a point
-	 * where we don't know yet on which SoC we are running.
-
+	 * Single-core SoCs (Armada 370) only need write-allocate, which
+	 * is configured in __v7_pj4b_proc_info (CONFIG_CPU_PJ4B). They do
+	 * not need shareable pages or the SMP bit.
 	 */
-	if (!is_smp())
+	if (num_possible_cpus() > 1 && !is_smp())
 		return COHERENCY_FABRIC_TYPE_NONE;
 
 	np = of_find_matching_node_and_match(NULL, of_coherency_table, &match);
 	if (!np)
 		return COHERENCY_FABRIC_TYPE_NONE;
+
+	/*
+	 * Single-core SoCs need write-allocate cache policy for I/O
+	 * coherency. Multi-core SoCs get this automatically via the
+	 * SMP path. If write-allocate is not in effect, refuse to
+	 * enable the coherency fabric to avoid data corruption.
+	 */
+	if (num_possible_cpus() == 1 && !writealloc_in_effect()) {
+		pr_warn_once("hardware I/O coherency requires write-allocate cache policy\n");
+		of_node_put(np);
+		return COHERENCY_FABRIC_TYPE_NONE;
+	}
 
 	type = (int) match->data;
 
