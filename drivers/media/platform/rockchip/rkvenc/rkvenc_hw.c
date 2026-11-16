@@ -275,7 +275,8 @@ static void rkvenc2_patch_dchs(struct rkvenc_dev *enc, struct rkvenc_task *task)
 
 	dchs[core_id].val[0] = task_dchs->val[0];
 	dchs[core_id].val[1] = task_dchs->val[1];
-	task->reg[RKVENC_CLASS_PIC].data[hw->dcsh_class_ofst] = task_dchs->val[0];
+	if (task->reg[RKVENC_CLASS_PIC].data)
+		task->reg[RKVENC_CLASS_PIC].data[hw->dcsh_class_ofst] = task_dchs->val[0];
 
 	dchs[core_id].working = 1;
 
@@ -443,45 +444,37 @@ irqreturn_t rkvenc_hw_irq(int irq, void *param)
 		ret = IRQ_HANDLED;
 	}
 
-	/* 4. process frame done irq */
-	if (irq_status & INT_STA_ENC_DONE_STA) {
+	/* 4. process frame done / error irq */
+	if (irq_status & (INT_STA_ENC_DONE_STA | INT_STA_ERROR)) {
 		enc->irq_status = irq_status;
 
-		if (enc->bs_overflow) {
+		if ((irq_status & INT_STA_ENC_DONE_STA) && enc->bs_overflow) {
 			enc->irq_status |= INT_STA_BSF_OFLW_STA;
 			enc->bs_overflow = 0;
 		}
 
+		if (irq_status & INT_STA_ERROR)
+			dev_err(enc->dev, "error status %08x\n", irq_status);
+
+		/*
+		 * Hand the task to the worker exactly once.  Once queued, the
+		 * worker (and the userspace poll thread) can finish and free the
+		 * task, so hard-IRQ context must not dereference mpp_task after
+		 * kthread_queue_work().  Previously the error block ran after
+		 * the frame-done block and re-touched a task that could already
+		 * be freed, corrupting the heap under load.
+		 */
 		if (mpp_task) {
 			if (test_and_set_bit(TASK_STATE_HANDLE, &mpp_task->state)) {
 				dev_err(enc->dev, "error, task %d already handled, irq %#x\n",
 					mpp_task->task_index, enc->irq_status);
-				ret = IRQ_HANDLED;
-				goto done;
-			}
-			cancel_delayed_work(&mpp_task->timeout_work);
-			set_bit(TASK_STATE_IRQ, &mpp_task->state);
-			mpp_task->irq_status = enc->irq_status;
-			rkvenc_iommu_dev_deactivate(enc->iommu_info, enc);
-
-			/* Trigger the worker to process the ISR bottom half */
-			kthread_queue_work(&enc->queue->worker, &enc->work);
-		}
-
-		ret = IRQ_HANDLED;
-	}
-
-	/* 5. process error irq */
-	if (irq_status & INT_STA_ERROR) {
-		enc->irq_status = irq_status;
-		dev_err(enc->dev, "error status %08x\n", irq_status);
-
-		if (mpp_task) {
-			if (!test_and_set_bit(TASK_STATE_HANDLE, &mpp_task->state)) {
+			} else {
 				cancel_delayed_work(&mpp_task->timeout_work);
 				set_bit(TASK_STATE_IRQ, &mpp_task->state);
 				mpp_task->irq_status = enc->irq_status;
 				rkvenc_iommu_dev_deactivate(enc->iommu_info, enc);
+
+				/* Trigger the worker to process the ISR bottom half */
 				kthread_queue_work(&enc->queue->worker, &enc->work);
 			}
 		}
@@ -489,7 +482,6 @@ irqreturn_t rkvenc_hw_irq(int irq, void *param)
 		ret = IRQ_HANDLED;
 	}
 
-done:
 	return ret;
 }
 

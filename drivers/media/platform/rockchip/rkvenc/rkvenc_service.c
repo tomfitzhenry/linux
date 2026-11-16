@@ -204,6 +204,12 @@ static int rkvenc_extract_task_msg(struct rkvenc_session *session,
 					rkvenc_err("alloc class msg %d fail.\n", j);
 					goto fail;
 				}
+				if (task->w_req_cnt >= ARRAY_SIZE(task->w_reqs)) {
+					rkvenc_err("write request count %u overflow\n",
+						   task->w_req_cnt);
+					ret = -EINVAL;
+					goto fail;
+				}
 				wreq = &task->w_reqs[task->w_req_cnt];
 				rkvenc_update_req(task, j, req, wreq);
 				data = (u8 *)task->reg[j].data + (wreq->offset - hw->reg_msg[j].base_s);
@@ -233,6 +239,12 @@ static int rkvenc_extract_task_msg(struct rkvenc_session *session,
 					rkvenc_err("alloc class msg reg %d fail.\n", j);
 					goto fail;
 				}
+				if (task->r_req_cnt >= ARRAY_SIZE(task->r_reqs)) {
+					rkvenc_err("read request count %u overflow\n",
+						   task->r_req_cnt);
+					ret = -EINVAL;
+					goto fail;
+				}
 				rreq = &task->r_reqs[task->r_req_cnt];
 				rkvenc_update_req(task, j, req, rreq);
 				task->reg[j].valid = 1;
@@ -240,13 +252,18 @@ static int rkvenc_extract_task_msg(struct rkvenc_session *session,
 			}
 		} break;
 		case MPP_CMD_SET_REG_ADDR_OFFSET: {
-			rkvenc_extract_reg_offset_info(&task->off_inf, req);
+			ret = rkvenc_extract_reg_offset_info(&task->off_inf, req);
+			if (ret)
+				goto fail;
 		} break;
 		case MPP_CMD_SET_RCB_INFO: {
 			struct rkvenc2_session_priv *priv = session->priv;
 
-			if (priv)
-				rkvenc2_extract_rcb_info(&priv->rcb_inf, req);
+			if (priv) {
+				ret = rkvenc2_extract_rcb_info(&priv->rcb_inf, req);
+				if (ret)
+					goto fail;
+			}
 		} break;
 		default:
 			break;
@@ -277,6 +294,8 @@ static int rkvenc_task_get_format(struct rkvenc_dev *mpp,
 		return -EINVAL;
 
 	offset = hw->fmt_reg.base - class_base;
+	if (offset > class_size - sizeof(u32))
+		return -EINVAL;
 	val = class_reg[offset / sizeof(u32)];
 	task->fmt = (val >> bitpos) & ((1 << bitlen) - 1);
 
@@ -288,6 +307,9 @@ static void rkvenc2_setup_task_id(u32 session_id, struct rkvenc_task *task)
 {
 	const struct rkvenc_hw_info *hw = task->hw_info;
 	u32 val;
+
+	if (!task->reg[RKVENC_CLASS_PIC].data)
+		return;
 
 	/* always enable tx */
 	val = task->reg[RKVENC_CLASS_PIC].data[hw->dcsh_class_ofst] | DCHS_TXE;
@@ -363,7 +385,8 @@ static void rkvenc2_set_rcbbuf(struct rkvenc_dev *enc,
 					u32 be = hw->reg_msg[c].base_e;
 					u32 addr = reg_idx * sizeof(u32);
 
-					if (addr >= bs && addr < be) {
+					if (task->reg[c].data && addr >= bs && addr < be &&
+					    (addr - bs) + sizeof(u32) <= task->reg[c].size) {
 						reg = (u32 *)((u8 *)task->reg[c].data + (addr - bs));
 						*reg = enc->sram_iova + rcb_offset;
 						break;
@@ -621,12 +644,18 @@ void rkvenc_task_worker_default(struct kthread_work *work)
 		unsigned long core_idle;
 		s32 core_id;
 
+		/*
+		 * pending_lock is a mutex: take it before the running spinlock,
+		 * matching the BSP order.  Taking it while holding running_lock
+		 * would sleep with IRQs disabled ("scheduling while atomic") and
+		 * can corrupt scheduler/RCU state under load.
+		 */
+		mutex_lock(&queue->pending_lock);
 		spin_lock_irqsave(&queue->running_lock, flags);
 		core_idle = queue->core_idle;
 		core_id = find_first_bit(&core_idle, queue->core_id_max + 1);
 
 		if (core_id <= queue->core_id_max && queue->cores[core_id]) {
-			mutex_lock(&queue->pending_lock);
 			pending_task = list_first_entry_or_null(&queue->pending_list,
 								struct rkvenc_mpp_task,
 								queue_link);
@@ -636,9 +665,9 @@ void rkvenc_task_worker_default(struct kthread_work *work)
 				pending_task->mpp = queue->cores[core_id];
 				pending_task->core_id = core_id;
 			}
-			mutex_unlock(&queue->pending_lock);
 		}
 		spin_unlock_irqrestore(&queue->running_lock, flags);
+		mutex_unlock(&queue->pending_lock);
 
 		if (pending_task) {
 			struct rkvenc_dev *target = pending_task->mpp;

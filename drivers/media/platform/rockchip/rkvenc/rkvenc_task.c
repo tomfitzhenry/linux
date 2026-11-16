@@ -181,7 +181,7 @@ rkvenc_task_attach_fd(struct rkvenc_mpp_task *task, int fd)
 	if (fd <= 0 || !dma || !mpp)
 		return ERR_PTR(-EINVAL);
 
-	if (task->mem_count > mem_num) {
+	if (task->mem_count >= mem_num) {
 		rkvenc_err("mem_count %d must less than %d\n", task->mem_count, mem_num);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -231,6 +231,9 @@ int rkvenc_translate_reg_address(struct rkvenc_session *session,
 	int cnt;
 	const u16 *tbl;
 	struct rkvenc_dev *mpp = rkvenc_get_task_used_device(task, session);
+	struct rkvenc_task *enc_task = container_of(task, struct rkvenc_task, mpp_task);
+	const struct rkvenc_hw_info *hw = enc_task->hw_info;
+	u32 reg_dwords = 0;
 
 	if (session->trans_count > 0) {
 		cnt = session->trans_count;
@@ -240,10 +243,24 @@ int rkvenc_translate_reg_address(struct rkvenc_session *session,
 		tbl = mpp->trans_info[fmt].table;
 	}
 
+	/* Locate the class buffer so a userspace trans table cannot index it OOB. */
+	for (i = 0; i < hw->reg_class; i++) {
+		if (enc_task->reg[i].data == reg) {
+			reg_dwords = enc_task->reg[i].size / sizeof(u32);
+			break;
+		}
+	}
+
 	for (i = 0; i < cnt; i++) {
 		int usr_fd;
 		u32 offset;
 		struct rkvenc_mem_region *mem_region;
+
+		if (tbl[i] >= reg_dwords) {
+			rkvenc_err("trans table index %u out of range %u\n",
+				   tbl[i], reg_dwords);
+			return -EINVAL;
+		}
 
 		if (session->msg_flags & MPP_FLAGS_REG_NO_OFFSET) {
 			usr_fd = reg[tbl[i]];

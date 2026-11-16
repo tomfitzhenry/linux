@@ -198,11 +198,23 @@ enum RKVENC_VEPU_TYPE {
 
 #define RKVENC_SCLR_DONE_STA		BIT(4)
 
-/* Interrupt status bits */
+/*
+ * VEPU580 interrupt status bits (register 0x2c).  These must match the
+ * hardware layout used by the vendor driver / MPP HAL (reg 0x2c, bits 0-9):
+ * the port previously decoded SLC_DONE as bit 1, BSF_OFLW as bit 2 and WDG as
+ * bit 5, so the real watchdog (bit 8) was treated as a generic bus error and
+ * never masked, producing an unkillable IRQ storm on the secondary core.
+ */
 #define INT_STA_ENC_DONE_STA		BIT(0)
-#define INT_STA_SLC_DONE_STA		BIT(1)
-#define INT_STA_BSF_OFLW_STA		BIT(2)
-#define INT_STA_WDG_STA			BIT(5)
+#define INT_STA_LKT_NODE_DONE_STA	BIT(1)
+#define INT_STA_SCLR_DONE_STA		BIT(2)
+#define INT_STA_SLC_DONE_STA		BIT(3)
+#define INT_STA_BSF_OFLW_STA		BIT(4)
+#define INT_STA_BRSP_OTSD_STA		BIT(5)
+#define INT_STA_WBUS_ERR_STA		BIT(6)
+#define INT_STA_RBUS_ERR_STA		BIT(7)
+#define INT_STA_WDG_STA			BIT(8)
+#define INT_STA_LKT_ERR_STA		BIT(9)
 #define INT_STA_ERROR			(0x03f0)
 
 /* Dual-core handshake */
@@ -546,8 +558,14 @@ struct rkvenc_task {
 
 	/* Class-based register buffers */
 	struct rkvenc_class_msg reg[RKVENC_CLASS_BUTT];
-	struct mpp_request w_reqs[RKVENC_CLASS_BUTT];
-	struct mpp_request r_reqs[RKVENC_CLASS_BUTT];
+	/*
+	 * One entry is appended per userspace message per overlapping class,
+	 * so the capacity must cover the service's message cap (the BSP sizes
+	 * these by MPP_MAX_MSG_NUM, not by the class count).  The extract path
+	 * additionally refuses to overflow them.
+	 */
+	struct mpp_request w_reqs[MPP_MAX_MSG_NUM];
+	struct mpp_request r_reqs[MPP_MAX_MSG_NUM];
 	u32 w_req_cnt;
 	u32 r_req_cnt;
 
