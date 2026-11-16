@@ -85,6 +85,12 @@
 #define CV18XX_TUNE_STEP			1
 #define CV18XX_RETRY_TUNING_MAX			50
 
+/* Sophgo CV18XX TOP SD power switch (outside the SDHCI register window) */
+#define CV18XX_TOP_BASE				0x03000000
+#define CV18XX_TOP_SD_PWRSW_CTRL		0x1f4
+/* auto=1, discard=0, vsel=0 (3.3V), enable=1 (vendor cvi_sdhci_probe()) */
+#define CV18XX_SD_PWRSW_3V3			0x9
+
 /* Rockchip specific Registers */
 #define DWCMSHC_EMMC_DLL_CTRL		0x800
 #define DWCMSHC_EMMC_DLL_RXCLK		0x804
@@ -1122,6 +1128,31 @@ static void cv18xx_sdhci_reset(struct sdhci_host *host, u8 mask)
 		FIELD_PREP(CV18XX_PHY_RX_DLY_MSK, 0) |
 		FIELD_PREP(CV18XX_PHY_RX_SRC_MSK, CV18XX_PHY_RX_SRC_INVERT_RX_CLK));
 	sdhci_writel(host, val, priv->vendor_specific_area1 + CV18XX_SDHCI_PHY_TX_RX_DLY);
+}
+
+static int cv18xx_init(struct device *dev, struct sdhci_host *host,
+		       struct dwcmshc_priv *priv)
+{
+	void __iomem *top;
+	u32 caps2 = host->mmc->caps2, sd_caps = MMC_CAP2_NO_MMC | MMC_CAP2_NO_SDIO;
+
+	/*
+	 * Only the SD card instance gates its VDD with the SoC's TOP SD power
+	 * switch; the eMMC and SDIO instances have their own supplies.  Keep the
+	 * DT opt-in so other CV18XX boards are unaffected.
+	 */
+	if ((caps2 & sd_caps) != sd_caps ||
+	    !device_property_read_bool(dev, "sophgo,sd-pwrsw"))
+		return 0;
+
+	top = devm_ioremap(dev, CV18XX_TOP_BASE, SZ_4K);
+	if (!top)
+		return -ENOMEM;
+
+	/* Power the slot for 3.3 V operation (sticky until the SoC resets). */
+	writel(CV18XX_SD_PWRSW_3V3, top + CV18XX_TOP_SD_PWRSW_CTRL);
+
+	return 0;
 }
 
 static void cv18xx_sdhci_set_tap(struct sdhci_host *host, int tap)
@@ -2199,6 +2230,7 @@ static const struct dwcmshc_pltfm_data sdhci_dwcmshc_cv18xx_pdata = {
 		.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 		.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
 	},
+	.init = cv18xx_init,
 };
 
 static const struct dwcmshc_pltfm_data sdhci_dwcmshc_sg2042_pdata = {
