@@ -12,6 +12,7 @@
 			opp-microvolt = <900000>;
 			clock-latency-ns = <244144>; /* 8 32k periods */
 			opp-supported-hw = <0x3f>;
+			opp-suspend;
 		};
 
 		opp-600000000 {
