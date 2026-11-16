@@ -320,16 +320,21 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 
 	watchdog_set_drvdata(&sunxi_wdt->wdt_dev, sunxi_wdt);
 
+	/*
+	 * If the bootloader already armed the watchdog, adopt it instead of
+	 * disarming it.
+	 */
 	if (sunxi_wdt_is_running(&sunxi_wdt->wdt_dev)) {
 		running_timeout = sunxi_wdt_get_timeout(&sunxi_wdt->wdt_dev);
-		if (running_timeout)
-			sunxi_wdt->wdt_dev.timeout = running_timeout;
-
-		err = sunxi_wdt_start(&sunxi_wdt->wdt_dev);
-		if (err)
-			return err;
-
+		sunxi_wdt_set_timeout(&sunxi_wdt->wdt_dev, WDT_MAX_TIMEOUT);
+		sunxi_wdt->wdt_dev.max_hw_heartbeat_ms = WDT_MAX_TIMEOUT * 1000;
 		set_bit(WDOG_HW_RUNNING, &sunxi_wdt->wdt_dev.status);
+		dev_info(dev,
+			 "adopted boot watchdog (boot_timeout=%us timeout=%us hw_running=%d)\n",
+			 running_timeout, sunxi_wdt->wdt_dev.timeout,
+			 test_bit(WDOG_HW_RUNNING, &sunxi_wdt->wdt_dev.status));
+	} else {
+		sunxi_wdt_stop(&sunxi_wdt->wdt_dev);
 	}
 
 	watchdog_stop_on_reboot(&sunxi_wdt->wdt_dev);
