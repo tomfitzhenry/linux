@@ -5980,12 +5980,30 @@ static int msc313e_init(struct platform_device *pdev)
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct macb *bp = netdev_priv(netdev);
 
+	u32 ncfgr;
+	int err;
+
 	msc313_emac1_txq_enable(bp);
 
 	bp->macb_reg_writel(bp, MACB_MSC313_JULIAN_104,
 			    0x10020000 | MACB_MSC313_J104_SW_DESC);
 
-	return at91ether_init(pdev);
+	err = at91ether_init(pdev);
+	if (err)
+		return err;
+
+	/*
+	 * at91ether_init() hard-codes the MACB MDC divider to pclk/32, which is
+	 * ~4.5 MHz on this SoC (pclk ~144 MHz) and above the 802.3 MDC limit
+	 * of 2.5 MHz.  Use pclk/64 (~2.25 MHz) so the internal PHY's MDIO
+	 * register accesses are in spec; the qemu-bench model ignores the
+	 * divider, so this only matters on real silicon.
+	 */
+	ncfgr = bp->macb_reg_readl(bp, MACB_NCFGR);
+	ncfgr = MACB_BFINS(CLK, MACB_CLK_DIV64, ncfgr);
+	bp->macb_reg_writel(bp, MACB_NCFGR, ncfgr);
+
+	return 0;
 }
 
 /*
