@@ -65,6 +65,14 @@ properties:
     description: Phandle to the Canaan K230 USB PHY node required for
                  k230-emmc/sdio.
 
+  sophgo,sd-pwrsw:
+    description:
+      The SoC gates the SD card slot's VDD with its TOP SD power switch.
+      Mainline has no driver for that switch; when this boolean is present,
+      the controller powers the slot for 3.3 V operation at probe time so the
+      card is usable regardless of what the bootloader left behind.
+    type: boolean
+
   rockchip,txclk-tapnum:
     description: Specify the number of delay for tx sampling.
     $ref: /schemas/types.yaml#/definitions/uint8
