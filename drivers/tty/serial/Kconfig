@@ -136,16 +136,19 @@ config SERIAL_EARLYCON_SSSTAR_UDP_DEBUG
 
 config SERIAL_EARLYCON_SSSTAR_UDP_PERSISTENT
 	bool "Keep the UDP console after real consoles register"
-	default y
+	default n
 	help
 	  A boot console is normally unregistered as soon as a real console
 	  registers.  On the retail C212 v2 UART0 has no pads, so ttyS0 can
 	  still become the default console and would silently take the only
 	  readable console away.  With this option the sstar_udp console
 	  drops its CON_BOOT flag and stays registered next to ttyS0, i.e.
-	  the UDP stream keeps carrying the whole dmesg.  Set this to N once
-	  the real Ethernet driver owns the MAC (the console TX slot must not
-	  fight the driver); the M2 netconsole takes over there.
+	  the UDP stream keeps carrying the whole dmesg.  This was needed in
+	  M1, where the blind console was the only readable output.  It must
+	  be N once the real Ethernet driver owns the MAC: the console writes
+	  the EMAC's single-packet TX slot directly and would fight macb.  In
+	  M2 the CON_BOOT console detaches when ttyS0 registers, netconsole
+	  takes over the logging, and the initramfs replays dmesg into it.
 
 config SERIAL_EARLYCON_SSSTAR_UDP_BLACKBOX
 	bool "Record EMAC/PHY state in a reserved DRAM page"
