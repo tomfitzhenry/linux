@@ -86,3 +86,22 @@
 	mmc0 = &mmc0;
 	mmc1 = &mmc1;
 };
+
+/*
+ * The shared H700 RGB-panel plumbing (pwm-backlight, the vdd-lcd regulator
+ * and the SPI-initialised panel node) comes from the RG35XX-2024 base; this
+ * board carries the v2 panel, so pin its compatible here.  panel-mipi derives
+ * the firmware filename, panels/<compatible>.panel, from the first string.
+ */
+&panel {
+	compatible = "anbernic,rg40xx-v2-panel", "panel-mipi-dpi-spi";
+};
+
+/*
+ * The RG40XX-H has no HDMI.  The base DTS enables the HDMI output, but the
+ * DW-HDMI driver is a module and the initramfs loads no modules, so the sun4i
+ * component master would defer forever waiting for it.  Disable it here.
+ */
+&hdmi {
+	status = "disabled";
+};
