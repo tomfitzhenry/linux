@@ -202,11 +202,11 @@ struct sun8i_mixer_cfg {
 	int			ui_num;
 	unsigned int		de_type;
 	unsigned long		mod_rate;
-	unsigned int		map[6];
 };
 
 struct sun8i_mixer {
 	struct sunxi_engine		engine;
+	struct sunxi_engine_pm		pm;
 
 	const struct sun8i_mixer_cfg	*cfg;
 
@@ -216,7 +216,10 @@ struct sun8i_mixer {
 	struct clk			*mod_clk;
 
 	struct regmap			*top_regs;
-	struct regmap			*disp_regs;
+	struct device			*planes_dev;
+	bool				clocks_suspended;
+	u32				saved_global_ctl;
+	u32				saved_global_clk;
 };
 
 enum {
@@ -250,13 +253,6 @@ static inline u32
 sun8i_blender_base(struct sun8i_mixer *mixer)
 {
 	return mixer->cfg->de_type == SUN8I_MIXER_DE3 ? DE3_BLD_BASE : DE2_BLD_BASE;
-}
-
-static inline struct regmap *
-sun8i_blender_regmap(struct sun8i_mixer *mixer)
-{
-	return mixer->cfg->de_type == SUN8I_MIXER_DE33 ?
-		mixer->disp_regs : mixer->engine.regs;
 }
 
 static inline u32
