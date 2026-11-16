@@ -575,8 +575,7 @@ int rkvenc_hw_run(struct rkvenc_dev *enc, struct rkvenc_mpp_task *mpp_task)
 	/* Calculate and write watchdog timeout threshold */
 	rkvenc2_calc_timeout_thd(enc);
 
-	/* Schedule timeout work */
-	INIT_DELAYED_WORK(&mpp_task->timeout_work, rkvenc_task_timeout_work);
+	/* Schedule timeout work (initialised in rkvenc_task_init()) */
 	schedule_delayed_work(&mpp_task->timeout_work,
 			      msecs_to_jiffies(MPP_WORK_TIMEOUT_DELAY));
 
@@ -697,19 +696,19 @@ int rkvenc_hw_reset(struct rkvenc_dev *enc)
 		rkvenc_safe_unreset(enc->rst_core);
 
 		/*
-		 * CRU reset wipes the IOMMU registers (DTE, paging).
-		 * Force a suspend→resume cycle on the IOMMU device to
-		 * re-program them via rk_iommu_enable.
+		 * Do NOT force a runtime-PM suspend/resume cycle on the IOMMU
+		 * here.  The IOMMU domain is shared between cores and another
+		 * core may already have a task in flight; pm_runtime_put_sync()
+		 * can power the IOMMU down underneath it and the subsequent
+		 * put/get cycle re-programs the DTE while tasks are running,
+		 * which faults the shared domain (dte valid: 0).  The next
+		 * rkvenc_hw_run() re-attaches the domain and re-programs the
+		 * page tables, so runtime PM can idle the IOMMU on its own.
 		 */
-		if (enc->iommu_info && enc->iommu_info->pdev) {
-			struct device *iommu_dev = &enc->iommu_info->pdev->dev;
-
-			pm_runtime_put_sync(iommu_dev);
-			pm_runtime_get_sync(iommu_dev);
-		}
 	}
 
-	set_bit(enc->core_id, &queue->core_idle);
+	if (queue)
+		set_bit(enc->core_id, &queue->core_idle);
 
 	if (ccu) {
 		spin_lock_irqsave(&ccu->lock_dchs, flags);

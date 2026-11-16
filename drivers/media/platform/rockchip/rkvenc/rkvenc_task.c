@@ -19,6 +19,12 @@ int rkvenc_task_init(struct rkvenc_session *session, struct rkvenc_mpp_task *tas
 	INIT_LIST_HEAD(&task->pending_link);
 	INIT_LIST_HEAD(&task->queue_link);
 	INIT_LIST_HEAD(&task->mem_region_list);
+	/*
+	 * Initialise the timeout work at task creation, not when the task is
+	 * dispatched: the teardown path cancels it unconditionally and must
+	 * never touch an uninitialised delayed_work.
+	 */
+	INIT_DELAYED_WORK(&task->timeout_work, rkvenc_task_timeout_work);
 	task->state = 0;
 	task->mem_count = 0;
 	task->session = session;
@@ -47,6 +53,11 @@ void rkvenc_free_task_callback(struct kref *ref)
 	}
 	session = task->session;
 	mpp = rkvenc_get_task_used_device(task, session);
+	if (!mpp) {
+		rkvenc_err("task %p, mpp is null.\n", task);
+		kfree(enc_task);
+		return;
+	}
 
 	/* Release memory regions and free class register buffers */
 	rkvenc_task_finalize(session, task);
@@ -72,8 +83,34 @@ void rkvenc_free_task_callback(struct kref *ref)
 int rkvenc_task_finish(struct rkvenc_session *session,
 		       struct rkvenc_mpp_task *task)
 {
-	struct rkvenc_dev *mpp = rkvenc_get_task_used_device(task, session);
-	struct rkvenc_taskqueue *queue = mpp->queue;
+	struct rkvenc_dev *mpp;
+	struct rkvenc_taskqueue *queue;
+
+	if (!session || !task) {
+		rkvenc_err("invalid finish: session %p task %p\n", session, task);
+		return -EINVAL;
+	}
+
+	/*
+	 * The hard IRQ path can only best-effort cancel the timeout work
+	 * (cancel_delayed_work() does not wait and cancel_delayed_work_sync()
+	 * may sleep).  Do the synchronous cancel here, in process context,
+	 * before the task can be freed: otherwise a timeout that is already
+	 * running can race the teardown and touch a freed task.
+	 */
+	cancel_delayed_work_sync(&task->timeout_work);
+
+	mpp = rkvenc_get_task_used_device(task, session);
+	if (!mpp) {
+		rkvenc_err("task %p, mpp is null\n", task);
+		return -EINVAL;
+	}
+
+	queue = mpp->queue;
+	if (!queue) {
+		rkvenc_err("task %p, queue is null\n", task);
+		return -EINVAL;
+	}
 
 	/* Read status registers back from HW */
 	rkvenc_hw_finish(mpp, task);
@@ -284,6 +321,10 @@ void rkvenc_task_timeout_work(struct work_struct *work_s)
 	mpp = rkvenc_get_task_used_device(task, session);
 	if (!mpp) {
 		rkvenc_err("mpp is null\n");
+		return;
+	}
+	if (!mpp->queue) {
+		rkvenc_err("mpp %p, queue is null\n", mpp);
 		return;
 	}
 

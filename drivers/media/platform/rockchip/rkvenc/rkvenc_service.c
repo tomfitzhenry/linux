@@ -570,7 +570,12 @@ void rkvenc_task_worker_default(struct kthread_work *work)
 	struct rkvenc_task *task;
 	struct rkvenc_session *session;
 
-	/* Process finished tasks (ISR bottom half) */
+	/*
+	 * Process finished tasks (ISR bottom half) or timed-out tasks.  The
+	 * IRQ and timeout paths are mutually exclusive via TASK_STATE_HANDLE;
+	 * use else-if so a single dispatch can never finish -- and free --
+	 * the same task twice.
+	 */
 	mpp_task = enc->cur_task;
 	if (mpp_task && test_bit(TASK_STATE_IRQ, &mpp_task->state)) {
 		enc->cur_task = NULL;
@@ -597,10 +602,7 @@ void rkvenc_task_worker_default(struct kthread_work *work)
 		rkvenc_task_finish(session, mpp_task);
 
 		set_bit(enc->core_id, &queue->core_idle);
-	}
-
-	/* Process timed-out tasks */
-	if (mpp_task && test_bit(TASK_STATE_TIMEOUT, &mpp_task->state)) {
+	} else if (mpp_task && test_bit(TASK_STATE_TIMEOUT, &mpp_task->state)) {
 		enc->cur_task = NULL;
 
 		session = mpp_task->session;
