@@ -428,49 +428,41 @@ static int cv1800b_i2s_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int cv1800b_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
-			       struct snd_soc_dai *dai)
+static int cv1800b_i2s_enable_event(struct snd_soc_dapm_widget *w,
+				    struct snd_kcontrol *kcontrol, int event)
 {
-	struct cv1800b_i2s *i2s = snd_soc_dai_get_drvdata(dai);
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct cv1800b_i2s *i2s = snd_soc_component_get_drvdata(component);
 	u32 val;
 
 	val = readl(i2s->base + CV1800B_I2S_ENABLE);
 
-	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_START:
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
 		val = u32_replace_bits(val, 1, I2S_ENABLE_MASK);
 		break;
-
-	case SNDRV_PCM_TRIGGER_STOP:
-	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+	case SND_SOC_DAPM_POST_PMD:
 		val = u32_replace_bits(val, 0, I2S_ENABLE_MASK);
 		break;
 	default:
+		WARN(1, "Unexpected event %d\n", event);
 		return -EINVAL;
 	}
+
 	writel(val, i2s->base + CV1800B_I2S_ENABLE);
 	return 0;
 }
 
-static int cv1800b_i2s_startup(struct snd_pcm_substream *substream,
-			       struct snd_soc_dai *dai)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct cv1800b_i2s *i2s = snd_soc_dai_get_drvdata(dai);
-	struct snd_soc_dai_link *dai_link = rtd->dai_link;
+static const struct snd_soc_dapm_widget cv1800b_i2s_widgets[] = {
+	SND_SOC_DAPM_SUPPLY("I2S", SND_SOC_NOPM, 0, 0,
+			    cv1800b_i2s_enable_event,
+			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+};
 
-	dev_dbg(i2s->dev, "%s: dai=%s substream=%d\n", __func__, dai->name,
-		substream->stream);
-	/**
-	 * Ensure DMA is stopped before DAI
-	 * shutdown (prevents DW AXI DMAC stop/busy on next open).
-	 */
-	dai_link->trigger_stop = SND_SOC_TRIGGER_ORDER_LDC;
-	return 0;
-}
+static const struct snd_soc_dapm_route cv1800b_i2s_routes[] = {
+	{ "Playback", NULL, "I2S" },
+	{ "Capture", NULL, "I2S" },
+};
 
 static int cv1800b_i2s_dai_probe(struct snd_soc_dai *dai)
 {
@@ -550,9 +542,7 @@ static int cv1800b_i2s_dai_set_sysclk(struct snd_soc_dai *dai, int clk_id,
 
 static const struct snd_soc_dai_ops cv1800b_i2s_dai_ops = {
 	.probe = cv1800b_i2s_dai_probe,
-	.startup = cv1800b_i2s_startup,
 	.hw_params = cv1800b_i2s_hw_params,
-	.trigger = cv1800b_i2s_trigger,
 	.set_fmt = cv1800b_i2s_dai_set_fmt,
 	.set_bclk_ratio = cv1800b_i2s_dai_set_bclk_ratio,
 	.set_sysclk = cv1800b_i2s_dai_set_sysclk,
@@ -579,6 +569,10 @@ static struct snd_soc_dai_driver cv1800b_i2s_dai_template = {
 
 static const struct snd_soc_component_driver cv1800b_i2s_component = {
 	.name = "cv1800b-i2s",
+	.dapm_widgets = cv1800b_i2s_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(cv1800b_i2s_widgets),
+	.dapm_routes = cv1800b_i2s_routes,
+	.num_dapm_routes = ARRAY_SIZE(cv1800b_i2s_routes),
 };
 
 static void cv1800b_i2s_hw_disable(struct cv1800b_i2s *i2s)
