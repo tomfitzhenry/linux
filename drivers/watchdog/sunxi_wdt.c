@@ -319,6 +319,7 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	watchdog_set_restart_priority(&sunxi_wdt->wdt_dev, 128);
 
 	watchdog_set_drvdata(&sunxi_wdt->wdt_dev, sunxi_wdt);
+	platform_set_drvdata(pdev, sunxi_wdt);
 
 	/*
 	 * If the bootloader already armed the watchdog, adopt it instead of
@@ -348,11 +349,45 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The TWD keeps counting while the system is suspended (its maximum is 16 s
+ * on the H616/H700), but nobody can feed it once userspace is frozen and the
+ * watchdog core cancels its ping worker.  Disarm it across system sleep so a
+ * suspend longer than the timeout cannot reset the board, and re-arm it on
+ * resume.  This covers every suspend path, including a raw write to
+ * /sys/power/state (e.g. rtcwake), which never runs systemd's sleep hooks.
+ */
+static int __maybe_unused sunxi_wdt_suspend(struct device *dev)
+{
+	struct sunxi_wdt_dev *sunxi_wdt = dev_get_drvdata(dev);
+	struct watchdog_device *wdd = &sunxi_wdt->wdt_dev;
+
+	if (watchdog_active(wdd) || watchdog_hw_running(wdd))
+		sunxi_wdt_stop(wdd);
+
+	return 0;
+}
+
+static int __maybe_unused sunxi_wdt_resume(struct device *dev)
+{
+	struct sunxi_wdt_dev *sunxi_wdt = dev_get_drvdata(dev);
+	struct watchdog_device *wdd = &sunxi_wdt->wdt_dev;
+
+	if (watchdog_active(wdd) || watchdog_hw_running(wdd))
+		sunxi_wdt_start(wdd);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(sunxi_wdt_pm_ops, sunxi_wdt_suspend,
+				sunxi_wdt_resume);
+
 static struct platform_driver sunxi_wdt_driver = {
 	.probe		= sunxi_wdt_probe,
 	.driver		= {
 		.name		= DRV_NAME,
 		.of_match_table	= sunxi_wdt_dt_ids,
+		.pm		= pm_ptr(&sunxi_wdt_pm_ops),
 	},
 };
 
