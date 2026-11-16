@@ -37,6 +37,41 @@
 		reg = <0x80000000 0x20000000>;	/* 512MiB */
 	};
 
+	/*
+	 * The zone is SoC-wide.  The passive trip is bound to the A53 cpufreq
+	 * cooling device (cpufreq-dt), the hot trip notifies userspace, and the
+	 * critical trip is the kernel thermal core's last-resort orderly
+	 * shutdown.  The hardware thermal-shutdown path is off by default and
+	 * is not enabled here.
+	 */
+	thermal-zones {
+		soc_thermal: soc-thermal {
+			polling-delay-passive = <1000>;
+			polling-delay = <1000>;
+			thermal-sensors = <&soc_temp>;
+
+			trips {
+				soc_passive: soc-passive {
+					temperature = <75000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				soc_hot: soc-hot {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				soc_critical: soc-critical {
+					temperature = <100000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+	};
+
 	pmu {
 		compatible = "arm,cortex-a53-pmu";
 		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH>,
@@ -71,6 +106,14 @@
 			reg = <0x03002000 0x1000>;
 			clocks = <&osc>;
 			#clock-cells = <1>;
+		};
+
+		soc_temp: thermal-sensor@30e0000 {
+			compatible = "sophgo,sg2000-thermal", "sophgo,cv1800b-thermal";
+			reg = <0x030e0000 0x100>;
+			clocks = <&clk CLK_TEMPSEN>;
+			interrupts = <SOC_PERIPHERAL_IRQ(0) IRQ_TYPE_LEVEL_HIGH>;
+			#thermal-sensor-cells = <0>;
 		};
 	};
 
