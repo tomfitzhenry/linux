@@ -29,6 +29,7 @@
 
 	aliases {
 		serial0 = &uart0;
+		ethernet0 = &emac0;
 	};
 
 	chosen {
@@ -85,4 +86,12 @@
 			mem-type = <1>;
 		};
 	};
+};
+
+/*
+ * The EMAC and its internal "Albany" PHY were brought up by U-Boot for the
+ * TFTP boot; the kernel only has to take them over.
+ */
+&emac0 {
+	status = "okay";
 };
