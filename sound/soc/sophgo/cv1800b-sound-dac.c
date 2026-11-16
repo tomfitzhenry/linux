@@ -57,6 +57,27 @@ static void cv1800b_dac_enable(struct cv1800b_priv *priv, bool enable)
 	writel(val, priv->regs + CV1800B_TXDAC_CTRL0);
 }
 
+static int cv1800b_dac_power_event(struct snd_soc_dapm_widget *w,
+				   struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct cv1800b_priv *priv = snd_soc_component_get_drvdata(component);
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		cv1800b_dac_enable(priv, true);
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		cv1800b_dac_enable(priv, false);
+		break;
+	default:
+		WARN(1, "Unexpected event %d\n", event);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 /*
  * Control the DAC overwrite bits. When enabled, the DAC outputs the fixed
  * overwrite value instead of samples from the I2S input.
@@ -126,32 +147,8 @@ static int cv1800b_dac_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int cv1800b_dac_dai_trigger(struct snd_pcm_substream *substream, int cmd,
-				   struct snd_soc_dai *dai)
-{
-	struct cv1800b_priv *priv = snd_soc_dai_get_drvdata(dai);
-
-	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_START:
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		cv1800b_dac_enable(priv, true);
-		break;
-	case SNDRV_PCM_TRIGGER_STOP:
-	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		cv1800b_dac_enable(priv, false);
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 static const struct snd_soc_dai_ops cv1800b_dac_dai_ops = {
 	.hw_params = cv1800b_dac_hw_params,
-	.trigger = cv1800b_dac_dai_trigger,
 };
 
 static struct snd_soc_dai_driver cv1800b_dac_dai = {
@@ -164,8 +161,26 @@ static struct snd_soc_dai_driver cv1800b_dac_dai = {
 	.ops = &cv1800b_dac_dai_ops,
 };
 
+static const struct snd_soc_dapm_widget cv1800b_dac_widgets[] = {
+	SND_SOC_DAPM_DAC_E("DAC", "DAC Playback", SND_SOC_NOPM, 0, 0,
+			   cv1800b_dac_power_event,
+			   SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
+	SND_SOC_DAPM_OUTPUT("HPOUTL"),
+	SND_SOC_DAPM_OUTPUT("HPOUTR"),
+};
+
+static const struct snd_soc_dapm_route cv1800b_dac_routes[] = {
+	{ "HPOUTL", NULL, "DAC" },
+	{ "HPOUTR", NULL, "DAC" },
+};
+
 static const struct snd_soc_component_driver cv1800b_dac_component = {
 	.name = "cv1800b-dac-codec",
+	.dapm_widgets = cv1800b_dac_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(cv1800b_dac_widgets),
+	.dapm_routes = cv1800b_dac_routes,
+	.num_dapm_routes = ARRAY_SIZE(cv1800b_dac_routes),
+	.use_pmdown_time = 1,
 };
 
 static int cv1800b_dac_probe(struct platform_device *pdev)
