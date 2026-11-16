@@ -754,17 +754,22 @@ static int rkvenc_process_request(struct rkvenc_session *session,
 		}
 	} break;
 	case MPP_CMD_INIT_TRANS_TABLE: {
-		int cnt = req->size / sizeof(u16);
-
-		if (cnt > MPP_MAX_REG_TRANS_NUM) {
-			rkvenc_err("trans count %d too large\n", cnt);
+		/*
+		 * Bound the copy by the byte size of the table, not by the
+		 * derived element count: a size of 257 (cnt == 128) passed the
+		 * old `cnt > MPP_MAX_REG_TRANS_NUM` check and copied one byte
+		 * past trans_table[].  The BSP compares req->size directly.
+		 */
+		if (req->size > sizeof(session->trans_table)) {
+			rkvenc_err("init table size %d more than %zu\n",
+				   req->size, sizeof(session->trans_table));
 			return -EINVAL;
 		}
 		if (copy_from_user(session->trans_table, req->data, req->size)) {
 			rkvenc_err("copy_from_user trans_table failed\n");
 			return -EFAULT;
 		}
-		session->trans_count = cnt;
+		session->trans_count = req->size / sizeof(session->trans_table[0]);
 	} break;
 	case MPP_CMD_SET_REG_WRITE:
 	case MPP_CMD_SET_REG_READ:
