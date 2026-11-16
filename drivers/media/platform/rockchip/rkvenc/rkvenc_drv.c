@@ -58,6 +58,25 @@ static int rkvenc_ccu_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/* ---- Detach core from CCU (rollback) ---- */
+static void rkvenc_detach_ccu(struct rkvenc_dev *enc)
+{
+	struct rkvenc_ccu *ccu = enc->ccu;
+
+	if (!ccu)
+		return;
+
+	mutex_lock(&ccu->lock);
+	list_del_init(&enc->core_link);
+	if (ccu->core_num > 0)
+		ccu->core_num--;
+	if (ccu->main_core == enc)
+		ccu->main_core = NULL;
+	mutex_unlock(&ccu->lock);
+
+	enc->ccu = NULL;
+}
+
 /* ---- Attach core to CCU ---- */
 static int rkvenc_attach_ccu(struct device *dev, struct rkvenc_dev *enc)
 {
@@ -78,6 +97,8 @@ static int rkvenc_attach_ccu(struct device *dev, struct rkvenc_dev *enc)
 	if (!ccu)
 		return -EPROBE_DEFER;
 
+	enc->ccu = ccu;
+
 	INIT_LIST_HEAD(&enc->core_link);
 	mutex_lock(&ccu->lock);
 	ccu->core_num++;
@@ -97,6 +118,7 @@ static int rkvenc_attach_ccu(struct device *dev, struct rkvenc_dev *enc)
 		shared = main_iommu ? main_iommu->domain : NULL;
 		if (!shared || !sec_iommu || !sec_iommu->group) {
 			dev_err(dev, "missing IOMMU info for shared domain\n");
+			rkvenc_detach_ccu(enc);
 			return -ENODEV;
 		}
 
@@ -119,10 +141,10 @@ static int rkvenc_attach_ccu(struct device *dev, struct rkvenc_dev *enc)
 			dev_err(dev, "attach shared IOMMU domain failed: %d\n", ret);
 			sec_iommu->domain = NULL;
 			sec_iommu->rw_sem = &sec_iommu->rw_sem_self;
+			rkvenc_detach_ccu(enc);
 			return ret;
 		}
 	}
-	enc->ccu = ccu;
 
 	dev_info(dev, "attach ccu as core %d%s\n", enc->core_id,
 		 enc == ccu->main_core ? " [main]" :
@@ -303,17 +325,24 @@ static int rkvenc_core_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	/* Attach to service */
-	ret = rkvenc_attach_service(enc);
-	if (ret) {
-		dev_err_probe(dev, ret, "failed to attach service\n");
-		goto err_hw;
-	}
-
-	/* Attach core to CCU */
+	/*
+	 * Attach core to CCU first: it shares the main core's IOMMU domain
+	 * with this (secondary) core.  Only after that may the core be
+	 * registered in the shared task queue, otherwise it could be
+	 * dispatched while its IOMMU still points at its own (unshared)
+	 * domain.
+	 */
 	ret = rkvenc_attach_ccu(dev, enc);
 	if (ret) {
 		dev_err_probe(dev, ret, "attach ccu failed\n");
+		goto err_hw;
+	}
+
+	/* Attach to service (registers the core in the shared task queue) */
+	ret = rkvenc_attach_service(enc);
+	if (ret) {
+		dev_err_probe(dev, ret, "failed to attach service\n");
+		rkvenc_detach_ccu(enc);
 		goto err_hw;
 	}
 
