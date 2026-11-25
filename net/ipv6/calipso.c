@@ -1044,6 +1044,7 @@ static int calipso_opt_getattr(const unsigned char *calipso,
 	}
 
 	secattr->type = NETLBL_NLTYPE_CALIPSO;
+	ret_val = 0;
 
 getattr_return:
 	rcu_read_unlock();
