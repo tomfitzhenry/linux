@@ -30,7 +30,8 @@
  *     NLBL_CALIPSO_A_DOI
  *     NLBL_CALIPSO_A_MTYPE
  *
- *   If using CALIPSO_MAP_PASS no additional attributes are required.
+ *   If using CALIPSO_MAP_PASS or CALIPSO_MAP_LOCAL no additional attributes
+ *   are required.
  *
  * o REMOVE:
  *   Sent by an application to remove a specific DOI mapping table from the
@@ -55,7 +56,8 @@
  *
  *     NLBL_CALIPSO_A_MTYPE
  *
- *   If using CALIPSO_MAP_PASS no additional attributes are required.
+ *   If using CALIPSO_MAP_PASS or CALIPSO_MAP_LOCAL no additional attributes
+ *   are required.
  *
  * o LISTALL:
  *   This message is sent by an application to list the valid DOIs on the

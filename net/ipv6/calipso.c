@@ -42,6 +42,11 @@
  */
 #define CALIPSO_HDR_LEN (2 + 8)
 
+/* Size of a local-mapping calipso option: header plus 32-bit host-local
+ * LSM secid carried in a single 32-bit compartment word.
+ */
+#define CALIPSO_LOC_OPT_LEN (CALIPSO_HDR_LEN + sizeof(u32))
+
 /* Maximum size of the calipso option including
  * the two-byte TLV header and upto 3 bytes of
  * leading pad and 7 bytes of trailing pad.
@@ -355,7 +360,9 @@ static int calipso_doi_add(struct calipso_doi *doi_def,
 	doi = doi_def->doi;
 	doi_type = doi_def->type;
 
-	if (doi_def->doi == CALIPSO_DOI_UNKNOWN)
+	if (doi_def->doi == CALIPSO_DOI_UNKNOWN ||
+	    (doi_def->type != CALIPSO_MAP_PASS &&
+	     doi_def->type != CALIPSO_MAP_LOCAL))
 		goto doi_add_return;
 
 	refcount_set(&doi_def->refcount, 1);
@@ -378,6 +385,9 @@ doi_add_return:
 		switch (doi_type) {
 		case CALIPSO_MAP_PASS:
 			type_str = "pass";
+			break;
+		case CALIPSO_MAP_LOCAL:
+			type_str = "local";
 			break;
 		default:
 			type_str = "(unknown)";
@@ -585,7 +595,20 @@ bool calipso_validate(const struct sk_buff *skb, const unsigned char *option)
 
 	rcu_read_lock();
 	doi_def = calipso_doi_search(get_unaligned_be32(option + 2));
-	ret_val = !!doi_def;
+	if (!doi_def) {
+		ret_val = false;
+	} else if (doi_def->type == CALIPSO_MAP_LOCAL) {
+		/* Local mappings carry a host-local LSM secid and are only
+		 * permitted on packets received via a loopback device.
+		 */
+		ret_val = skb && skb->dev &&
+			  (skb->dev->flags & IFF_LOOPBACK) &&
+			  len == CALIPSO_LOC_OPT_LEN &&
+			  option[6] == sizeof(u32) / 4 &&
+			  option[7] == 0;
+	} else {
+		ret_val = true;
+	}
 	rcu_read_unlock();
 
 	return ret_val;
@@ -728,6 +751,31 @@ static int calipso_genopt(unsigned char *buf, u32 start, u32 buf_len,
 
 	/* CALIPSO has 4n + 2 alignment */
 	pad = padding[start & 3];
+
+	if (doi_def->type == CALIPSO_MAP_LOCAL) {
+		if (buf_len < start + pad + CALIPSO_LOC_OPT_LEN)
+			return -ENOSPC;
+		if (!(secattr->flags & NETLBL_SECATTR_SECID))
+			return -EPERM;
+
+		len = CALIPSO_LOC_OPT_LEN;
+		calipso_pad_write(buf, start, pad);
+		calipso = buf + start + pad;
+
+		calipso[0] = IPV6_TLV_CALIPSO;
+		calipso[1] = len - 2;
+		put_unaligned_be32(doi_def->doi, calipso + 2);
+		calipso[6] = sizeof(u32) / 4;
+		calipso[7] = 0;
+		calipso[8] = 0;
+		calipso[9] = 0;
+		put_unaligned(secattr->attr.secid, (u32 *)(calipso + 10));
+		crc = ~crc_ccitt(0xffff, calipso, len);
+		calipso[8] = crc & 0xff;
+		calipso[9] = (crc >> 8) & 0xff;
+		return pad + len;
+	}
+
 	if (buf_len <= start + pad + CALIPSO_HDR_LEN)
 		return -ENOSPC;
 
@@ -1026,21 +1074,38 @@ static int calipso_opt_getattr(const unsigned char *calipso,
 	if (!doi_def)
 		goto getattr_return;
 
-	secattr->attr.mls.lvl = calipso[7];
-	secattr->flags |= NETLBL_SECATTR_MLS_LVL;
+	switch (doi_def->type) {
+	case CALIPSO_MAP_PASS:
+		secattr->attr.mls.lvl = calipso[7];
+		secattr->flags |= NETLBL_SECATTR_MLS_LVL;
 
-	if (cat_len) {
-		ret_val = calipso_map_cat_ntoh(doi_def,
-					       calipso + 10,
-					       cat_len,
-					       secattr);
-		if (ret_val != 0) {
-			netlbl_catmap_free(secattr->attr.mls.cat);
+		if (cat_len) {
+			ret_val = calipso_map_cat_ntoh(doi_def,
+						       calipso + 10,
+						       cat_len,
+						       secattr);
+			if (ret_val != 0) {
+				netlbl_catmap_free(secattr->attr.mls.cat);
+				goto getattr_return;
+			}
+
+			if (secattr->attr.mls.cat)
+				secattr->flags |= NETLBL_SECATTR_MLS_CAT;
+		}
+		break;
+	case CALIPSO_MAP_LOCAL:
+		if (len != CALIPSO_LOC_OPT_LEN - 2 ||
+		    cat_len != sizeof(u32) ||
+		    calipso[7] != 0) {
+			ret_val = -EINVAL;
 			goto getattr_return;
 		}
-
-		if (secattr->attr.mls.cat)
-			secattr->flags |= NETLBL_SECATTR_MLS_CAT;
+		secattr->attr.secid = get_unaligned((const u32 *)(calipso + 10));
+		secattr->flags |= NETLBL_SECATTR_SECID;
+		break;
+	default:
+		ret_val = -EINVAL;
+		goto getattr_return;
 	}
 
 	secattr->type = NETLBL_NLTYPE_CALIPSO;
