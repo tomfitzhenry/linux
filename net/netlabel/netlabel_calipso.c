@@ -79,18 +79,20 @@ static const struct netlbl_calipso_ops *netlbl_calipso_ops_get(void)
 /* NetLabel Command Handlers
  */
 /**
- * netlbl_calipso_add_pass - Adds a CALIPSO pass DOI definition
+ * netlbl_calipso_add_doi - Adds a CALIPSO DOI definition
  * @info: the Generic NETLINK info block
  * @audit_info: NetLabel audit information
+ * @type: the CALIPSO mapping type (CALIPSO_MAP_*)
  *
  * Description:
- * Create a new CALIPSO_MAP_PASS DOI definition based on the given ADD message
- * and add it to the CALIPSO engine.  Return zero on success and non-zero on
- * error.
+ * Create a new CALIPSO DOI definition of type @type based on the given ADD
+ * message and add it to the CALIPSO engine.  Return zero on success and
+ * non-zero on error.
  *
  */
-static int netlbl_calipso_add_pass(struct genl_info *info,
-				   struct netlbl_audit *audit_info)
+static int netlbl_calipso_add_doi(struct genl_info *info,
+				  struct netlbl_audit *audit_info,
+				  u32 type)
 {
 	int ret_val;
 	struct calipso_doi *doi_def = NULL;
@@ -98,7 +100,7 @@ static int netlbl_calipso_add_pass(struct genl_info *info,
 	doi_def = kmalloc_obj(*doi_def);
 	if (!doi_def)
 		return -ENOMEM;
-	doi_def->type = CALIPSO_MAP_PASS;
+	doi_def->type = type;
 	doi_def->doi = nla_get_u32(info->attrs[NLBL_CALIPSO_A_DOI]);
 	ret_val = calipso_doi_add(doi_def, audit_info);
 	if (ret_val != 0)
@@ -133,7 +135,12 @@ static int netlbl_calipso_add(struct sk_buff *skb, struct genl_info *info)
 	netlbl_netlink_auditinfo(&audit_info);
 	switch (nla_get_u32(info->attrs[NLBL_CALIPSO_A_MTYPE])) {
 	case CALIPSO_MAP_PASS:
-		ret_val = netlbl_calipso_add_pass(info, &audit_info);
+		ret_val = netlbl_calipso_add_doi(info, &audit_info,
+						 CALIPSO_MAP_PASS);
+		break;
+	case CALIPSO_MAP_LOCAL:
+		ret_val = netlbl_calipso_add_doi(info, &audit_info,
+						 CALIPSO_MAP_LOCAL);
 		break;
 	}
 	if (ret_val == 0)

@@ -33,6 +33,7 @@
 /* doi mapping types */
 #define CALIPSO_MAP_UNKNOWN          0
 #define CALIPSO_MAP_PASS             2
+#define CALIPSO_MAP_LOCAL            3
 
 /*
  * CALIPSO DOI definitions

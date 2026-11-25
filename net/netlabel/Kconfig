@@ -17,3 +17,13 @@ config NETLABEL
 	   * https://github.com/netlabel/netlabel_tools
 
 	  If you are unsure, say N.
+
+config NETLABEL_CALIPSO_KUNIT_TEST
+	bool "KUnit tests for NetLabel CALIPSO" if !KUNIT_ALL_TESTS
+	depends on NETLABEL && IPV6 && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Enable KUnit unit tests for NetLabel IPv6 CALIPSO option
+	  encoding, decoding, and loopback validation.
+
+	  If unsure, say N.
