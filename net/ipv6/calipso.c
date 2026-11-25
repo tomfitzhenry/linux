@@ -1543,3 +1543,7 @@ void calipso_exit(void)
 	calipso_cache_invalidate();
 	kfree(calipso_cache);
 }
+
+#ifdef CONFIG_NETLABEL_CALIPSO_KUNIT_TEST
+#include "calipso_test.c"
+#endif
